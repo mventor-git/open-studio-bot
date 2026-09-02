@@ -6,3 +6,4 @@ jobs/*.json
 jobs/media/
 tests/media/
 screenshots/
+tools/

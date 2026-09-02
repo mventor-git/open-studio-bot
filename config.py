@@ -63,6 +63,9 @@ class Config:
         default_factory=lambda: int(os.environ.get("MAX_DURATION_SECONDS", "600"))
     )
 
+    # Bundled ffmpeg/ffprobe (portable install under tools/)
+    ffmpeg_dir: Path = field(default_factory=lambda: REPO_ROOT / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin")
+
     def ensure_dirs(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,6 +80,8 @@ def check_config() -> list[str]:
         problems.append("BOT_TOKEN is not set (Telegram bot will not start)")
     if config.allowed_chat_id <= 0:
         problems.append("ALLOWED_CHAT_ID is not set (bot would answer anyone)")
+    if not (config.ffmpeg_dir / "ffprobe.exe").exists():
+        problems.append(f"ffprobe not found in {config.ffmpeg_dir} (audio check will fail)")
     if not config.waterfox_profile.exists():
         problems.append(f"WATERFOX_PROFILE not found: {config.waterfox_profile}")
     try:
