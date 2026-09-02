@@ -32,6 +32,9 @@ _load_dotenv()
 class Config:
     # Telegram
     bot_token: str = field(default_factory=lambda: os.environ.get("BOT_TOKEN", ""))
+    allowed_chat_id: int = field(
+        default_factory=lambda: int(os.environ.get("ALLOWED_CHAT_ID", "0"))
+    )
 
     # opencode serve
     opencode_server_url: str = field(
@@ -72,6 +75,8 @@ def check_config() -> list[str]:
     problems: list[str] = []
     if not config.bot_token:
         problems.append("BOT_TOKEN is not set (Telegram bot will not start)")
+    if config.allowed_chat_id <= 0:
+        problems.append("ALLOWED_CHAT_ID is not set (bot would answer anyone)")
     if not config.waterfox_profile.exists():
         problems.append(f"WATERFOX_PROFILE not found: {config.waterfox_profile}")
     try:
