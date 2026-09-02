@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+jobs/*.json
+jobs/media/
+tests/media/
+screenshots/
