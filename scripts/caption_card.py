@@ -19,8 +19,8 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_AR = Path(r"C:\Windows\Fonts\DUBAI-BOLD.TTF")     # strong Arabic
-FONT_AR_BODY = Path(r"C:\Windows\Fonts\DUBAI-MEDIUM.TTF")
+FONT_AR = Path(r"C:\Windows\Fonts\majallab.ttf")      # Sakkal Majalla Bold — full presentation forms (ت ا ة)
+FONT_AR_BODY = Path(r"C:\Windows\Fonts\majalla.ttf")       # Sakkal Majalla — elegant Naskh
 FONT_HANDLE = Path(r"C:\Windows\Fonts\segoeui.ttf")        # clean Latin for @handle
 
 
