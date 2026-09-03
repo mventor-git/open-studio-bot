@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONT_AR = Path(r"C:\Windows\Fonts\DUBAI-BOLD.TTF")     # strong Arabic
 FONT_AR_BODY = Path(r"C:\Windows\Fonts\DUBAI-MEDIUM.TTF")
+FONT_HANDLE = Path(r"C:\Windows\Fonts\segoeui.ttf")        # clean Latin for @handle
 
 
 def shape_ar(text: str) -> str:
@@ -91,14 +92,15 @@ def draw_tiktok_note(draw: ImageDraw.ImageDraw, cx: float, cy: float, size: floa
     _note(0, 0, white)                        # main
 
 
-def tiktok_watermark(img: Image.Image, handle: str = "@mventor", size_frac: float = 0.08,
-                     pad_frac: float = 0.04, corner: str = "top-left") -> Image.Image:
-    """TikTok note logo + @handle watermark in a corner of the frame."""
+def tiktok_watermark(img: Image.Image, handle: str = "@mventor", size_frac: float = 0.032,
+                     pad_frac: float = 0.035, corner: str = "top-left") -> Image.Image:
+    """TikTok note logo + @handle watermark — small, clean, top-left corner."""
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
-    font = _font(FONT_AR, max(22, int(h * size_frac * 0.9)))
+    # Latin handle: clean Segoe UI, not Arabic font, smaller
+    font = _font(FONT_HANDLE, max(16, int(h * 0.028)))
     note_size = h * size_frac
-    text = shape_ar(handle)
+    text = handle  # Latin, no shaping
     tw = draw.textlength(text, font=font)
     th = font.size
     pad = int(w * pad_frac)
@@ -126,45 +128,52 @@ def card(img: Image.Image, title: str, subtitle: str = "",
          accent: tuple = (234, 179, 8, 255),            # gold
          panel: tuple = (0, 0, 0, 200),
          text_color: tuple = (255, 255, 255, 255),
-         max_width_frac: float = 0.86, panel_pad: int = 18) -> Image.Image:
-    """Rounded card with an accent bar, right-aligned Arabic title + subtitle."""
+         max_width_frac: float = 0.94, panel_pad: int = 36) -> Image.Image:
+    """Rounded card — wide + tall (Template 01: 9:16 TikTok for 16:9 source).
+    Right-aligned Arabic title + subtitle, accent bar on the RTL edge.
+    """
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
     max_w = int(w * max_width_frac)
 
-    t_font = _font(FONT_AR, max(26, int(h * 0.045)))
-    s_font = _font(FONT_AR_BODY, max(20, int(h * 0.034)))
+    # larger Arabic fonts
+    t_font = _font(FONT_AR, max(32, int(h * 0.052)))
+    s_font = _font(FONT_AR_BODY, max(24, int(h * 0.040)))
     title_lines = _wrap(draw, shape_ar(title), t_font, max_w - panel_pad * 2 - 12)
     sub_lines = _wrap(draw, shape_ar(subtitle), s_font, max_w - panel_pad * 2 - 12) if subtitle else []
 
-    title_h = t_font.size + 8
-    sub_h = (s_font.size + 6) * len(sub_lines)
-    card_h = panel_pad * 2 + title_h * len(title_lines) + (sub_h + 8 if sub_lines else 0)
+    title_h = t_font.size + 10
+    sub_h = (s_font.size + 8) * len(sub_lines)
+    base_h = panel_pad * 2 + title_h * len(title_lines) + (sub_h + 10 if sub_lines else 0)
+    card_h = int(base_h * 1.95)  # ~2x taller
 
     x0 = int((w - max_w) / 2)
-    y0 = int(h - card_h - h * 0.055)
+    y0 = int(h - card_h - h * 0.04)
     x1 = x0 + max_w
     y1 = y0 + card_h
 
     # soft shadow
-    _rounded(draw, (x0 + 4, y0 + 6, x1 + 4, y1 + 6), radius=18, fill=(0, 0, 0, 90))
+    _rounded(draw, (x0 + 4, y0 + 8, x1 + 4, y1 + 8), radius=22, fill=(0, 0, 0, 90))
     # panel
-    _rounded(draw, (x0, y0, x1, y1), radius=18, fill=panel)
-    # accent bar (right edge, saturating toward RTL)
-    _rounded(draw, (x1 - 9, y0 + 10, x1 - 1, y1 - 10), radius=4, fill=accent)
+    _rounded(draw, (x0, y0, x1, y1), radius=22, fill=panel)
+    # accent bar (right edge, RTL side)
+    _rounded(draw, (x1 - 10, y0 + 14, x1 - 2, y1 - 14), radius=5, fill=accent)
 
+    # center text vertically inside the taller card
+    content_h = title_h * len(title_lines) + (sub_h + 10 if sub_lines else 0)
+    ty = y0 + (card_h - content_h) // 2
     tx = x1 - panel_pad - 12
-    ty = y0 + panel_pad
-    # right-aligned title (RTL)
     for ln in title_lines:
         tw = draw.textlength(ln, font=t_font)
-        draw.text((tx - tw, ty), ln, font=t_font, fill=text_color)
+        draw.text((tx - tw, ty), ln, font=t_font, fill=text_color,
+                  stroke_width=1, stroke_fill=(0, 0, 0, 90))
         ty += title_h
-    ty += 4
+    ty += 6
     for ln in sub_lines:
         tw = draw.textlength(ln, font=s_font)
-        draw.text((tx - tw, ty), ln, font=s_font, fill=(226, 226, 226, 255))
-        ty += s_font.size + 6
+        draw.text((tx - tw, ty), ln, font=s_font, fill=(226, 226, 226, 255),
+                  stroke_width=1, stroke_fill=(0, 0, 0, 80))
+        ty += s_font.size + 8
     return img
 
 
