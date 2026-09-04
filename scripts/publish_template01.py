@@ -14,8 +14,8 @@ Spec:
   - Publish: two-step نشر -> النشر الآن confirm modal + scroll fix (y1488>1080)
 
 Usage:
-  python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --title "سعدني" --subtitle "صفات القائد"  # 01
-  python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --template 00 --desc "hello" --no-upload  # 00 clean
+  python scripts/publish_template01.py --source jobs/media/input.mp4 --title "Example Title" --subtitle "Example Subtitle"  # 01
+  python scripts/publish_template01.py --source jobs/media/input.mp4 --template 00 --desc "hello" --no-upload  # 00 clean
   python scripts/publish_template01.py --source in.mp4 --out jobs/media/my_tiktok.mp4 --no-upload  # render only
   python scripts/publish_template01.py --source in.mp4 --title "X" --dry-run  # verify without upload
 
@@ -62,9 +62,9 @@ SCREENSHOT_DIR = REPO_ROOT / "screenshots"
 COOKIES_TMP = Path(r"C:\Users\Mventor\AppData\Local\Temp\tmpck.sqlite")
 COOKIES_WATERFOX = Path(r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles\yixam57i.default-release\cookies.sqlite")
 
-# default caption if not provided (keep Arabic for shaping test)
-DEFAULT_TITLE = "سعدني في الحضارة"
-DEFAULT_SUBTITLE = "صفات القائد"
+# default caption: empty — fetch from video URL via yt-dlp probe when not provided
+DEFAULT_TITLE = ""
+DEFAULT_SUBTITLE = ""
 
 
 def log(msg: str):

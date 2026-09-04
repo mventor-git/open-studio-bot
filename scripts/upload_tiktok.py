@@ -12,7 +12,7 @@ This is the default uploader. Use it for any TikTok upload — retry6 proved
 that without step 2 the publish never happens (no POST, no project_id/item_id).
 
 Usage:
-  python scripts/upload_tiktok.py --video jobs/media/qaid_tiktok.mp4 --desc "سعدني ..."
+  python scripts/upload_tiktok.py --video jobs/media/input_tiktok.mp4 --desc "Example description"
   python scripts/upload_tiktok.py --video out.mp4 --dry-run  # verify modal code
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ def wait_for_confirm_modal(page, timeout: int = 15) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--video", required=True, help="1080x1920 mp4 to upload")
-    ap.add_argument("--desc", default="سعدني في الحضارة - صفات القائد #حضارة #قيادة #تاريخ")
+    ap.add_argument("--desc", default="")
     ap.add_argument("--dry-run", action="store_true", help="verify modal code present without uploading")
     ap.add_argument("--headless", action="store_true")
     args = ap.parse_args()

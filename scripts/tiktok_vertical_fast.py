@@ -5,7 +5,7 @@ to a transparent 1080x1920 PNG, then ffmpeg composites everything in a single
 filter_complex pass. 51s video: ~20-30s instead of 3 minutes.
 
 Usage (run in YOUR terminal window, not the agent CLI):
-  python scripts/tiktok_vertical_fast.py --source jobs/media/qaid_seg.mp4 --out jobs/media/qaid_tiktok.mp4 --title "سعدني في الحضارة" --subtitle "صفات القائد" --style card
+  python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/media/out_tiktok.mp4 --title "Example Title" --subtitle "Example Subtitle" --style card
 
 Burns the caption IN the pixels (Pillow drawText with arabic shaping) and the
 TikTok note logo + watermark handle (if set), all physically in the video.
@@ -43,13 +43,13 @@ def probe_duration(path: Path) -> float:
 
 
 def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str | None = None) -> Path:
-    """Render ONE transparent overlay PNG with caption card + watermark."""
-    if handle is None:
-        handle = config.watermark_handle or ""
+    """Render ONE transparent overlay PNG with caption card + watermark.
 
     Template 00: title == "" and subtitle == "" => no card is drawn, only watermark if handle != "".
     Result is fully transparent (or watermark-only) and ffmpeg still does 9:16 conversion correctly.
     """
+    if handle is None:
+        handle = config.watermark_handle or ""
     def hex_rgba(h: str):
         h = h.lstrip("#")
         return tuple(int(h[i:i+2], 16) for i in (0,2,4)) + (255,)
@@ -103,8 +103,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--title", default="سعدني في الحضارة")
-    ap.add_argument("--subtitle", default="صفات القائد")
+    ap.add_argument("--title", default="")
+    ap.add_argument("--subtitle", default="")
     ap.add_argument("--style", default="card", choices=["card", "pill", "banner"])
     ap.add_argument("--accent", default="#EAB308")
     ap.add_argument("--handle", default=None, help="watermark handle, defaults to WATERMARK_HANDLE env (empty=skip)")

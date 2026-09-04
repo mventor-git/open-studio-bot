@@ -5,7 +5,7 @@ Blurred 16:9 background fills the top/bottom; the sharp video is centered in a
 
 Usage:
   python scripts/tiktok_vertical.py --source <in.mp4> --out <out.mp4>
-      [--title "سعدني في الحضارة"] [--subtitle "صفات القائد"]
+      [--title "Example Title"] [--subtitle "Example Subtitle"]
       [--style card|pill|banner] [--accent "#EAB308"]
 """
 from __future__ import annotations

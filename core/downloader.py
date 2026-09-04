@@ -48,7 +48,7 @@ def download(
     """Download capped at config.max_resolution. Returns {ok, video_path, error}.
 
     Killable mid-run via interrupt registry (terminate -> escalate kill).
-    If start/end provided, uses yt-dlp --download-sections "*start-end" (proven for qaid 26:19-27:10).
+    If start/end provided, uses yt-dlp --download-sections "*start-end" (proven for 26:19-27:10 segment).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

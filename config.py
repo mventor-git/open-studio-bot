@@ -11,6 +11,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 
+# Default title/subtitle: empty — fetched from video URL via yt-dlp probe when not provided (no hardcoded test data)
+DEFAULT_TITLE = ""
+DEFAULT_SUBTITLE = ""
+
 
 def _load_dotenv() -> None:
     """Tiny .env loader (no python-dotenv dependency)."""
@@ -82,6 +86,10 @@ class Config:
     tiktok_handle: str = field(default_factory=lambda: (os.environ.get("TIKTOK_HANDLE") or "").strip())
     watermark_handle: str = field(default_factory=lambda: (os.environ.get("WATERMARK_HANDLE") or "").strip())
     cookie_check_hours: int = field(default_factory=lambda: int((os.environ.get("COOKIE_CHECK_HOURS") or "24").strip() or "24"))
+
+    # Default captions — empty (no hardcoded test strings); bot fetches from video URL when skipped
+    default_title: str = field(default_factory=lambda: (os.environ.get("DEFAULT_TITLE") or "").strip())
+    default_subtitle: str = field(default_factory=lambda: (os.environ.get("DEFAULT_SUBTITLE") or "").strip())
 
     # Bundled ffmpeg/ffprobe (portable install under tools/)
     ffmpeg_dir: Path = field(default_factory=lambda: REPO_ROOT / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin")

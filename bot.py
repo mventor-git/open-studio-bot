@@ -39,8 +39,8 @@ from config import check_config, config
 
 # --- parsing helpers (pure, testable without Telegram) -----------------
 
-DEFAULT_TITLE = "سعدني في الحضارة"
-DEFAULT_SUBTITLE = "صفات القائد"
+DEFAULT_TITLE = ""
+DEFAULT_SUBTITLE = ""
 
 _ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch")
 
@@ -246,9 +246,9 @@ def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
                 parts = [p.strip() for p in parts if p.strip()]
                 if len(parts) >= 2:
                     return parts[0], parts[1], cleaned
-                return parts[0], DEFAULT_SUBTITLE, cleaned
-            return cleaned, DEFAULT_SUBTITLE, cleaned
-        return DEFAULT_TITLE, DEFAULT_SUBTITLE, f"{DEFAULT_TITLE} - {DEFAULT_SUBTITLE}"
+                return parts[0], "", cleaned
+            return cleaned, "", cleaned
+        return "", "", ""
     # case B: remainder after URL
     if url and url in raw_text:
         rest = raw_text.split(url, 1)[1]
@@ -270,9 +270,9 @@ def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
             parts = [p.strip() for p in parts if p.strip()]
             if len(parts) >= 2:
                 return parts[0], parts[1], cleaned
-            return parts[0], DEFAULT_SUBTITLE, cleaned
-        return cleaned, DEFAULT_SUBTITLE, cleaned
-    return DEFAULT_TITLE, DEFAULT_SUBTITLE, f"{DEFAULT_TITLE} - {DEFAULT_SUBTITLE}"
+            return parts[0], "", cleaned
+        return cleaned, "", cleaned
+    return "", "", ""
 
 
 def parse_description_text_only(text: str, url: str | None = None) -> str:
@@ -418,8 +418,8 @@ def dry_run_mode() -> int:
     print("dry-run: parsing handler checks + approval loop state machine + wizard v2")
     cases = [
         (
-            "https://www.youtube.com/watch?v=xZDk-vyZm3w - Cut 26:19 to 27:10 Template 01 - سعدني في الحضارة",
-            {"url": "https://www.youtube.com/watch?v=xZDk-vyZm3w", "start": 1579, "end": 1630, "template": "01", "title_contains": "سعدني"},
+            "https://www.youtube.com/watch?v=xZDk-vyZm3w - Cut 26:19 to 27:10 Template 01 - Example Title",
+            {"url": "https://www.youtube.com/watch?v=xZDk-vyZm3w", "start": 1579, "end": 1630, "template": "01", "title_contains": "Example Title"},
         ),
         (
             "https://www.youtube.com/watch?v=IvaxAtX4abc Template 01 - Cut 0.25 to 1.00",
@@ -1025,22 +1025,23 @@ def _build_bot():
                 caption = (caption + " " + tags_str).strip()
             elif not caption:
                 caption = tags_str
-        # For template 01, derive title/subtitle from description (split on -)
+        # For template 01, derive title/subtitle from description (split on -) — empty defaults, fallback to probe title
         if template == "01":
             t_title, t_sub, _ = parse_description(description, url)
-            # if parse_description returns default title but description provided, keep description as title
+            # if user skipped description, use probe title fetched via verify_url
             if not description:
-                t_title = wiz.get("title") or DEFAULT_TITLE
-                t_sub = DEFAULT_SUBTITLE
+                probe_title = (wiz.get("probe") or {}).get("title") or wiz.get("title") or ""
+                t_title = probe_title[:80] if probe_title else ""
+                t_sub = ""
             else:
-                # if description contains " - ", split; else treat whole as title
+                # if description contains " - ", split; else treat whole as title, subtitle empty
                 if " - " in description or " – " in description or " — " in description:
                     parts = re.split(r"\s*[-–—]\s*", description, maxsplit=1)
-                    t_title = parts[0].strip() if parts and parts[0].strip() else DEFAULT_TITLE
-                    t_sub = parts[1].strip() if len(parts) > 1 and parts[1].strip() else DEFAULT_SUBTITLE
+                    t_title = parts[0].strip() if parts and parts[0].strip() else ""
+                    t_sub = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
                 else:
                     t_title = description[:80]
-                    t_sub = DEFAULT_SUBTITLE
+                    t_sub = ""
         else:
             t_title = ""
             t_sub = ""
