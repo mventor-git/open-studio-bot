@@ -6,9 +6,10 @@ Run modes:
   python bot.py --dry-run       # handler parsing self-check, no Telegram needed
 
 Flow T6:
-  user sends URL + optional cut + Template 01 + description
-  -> verify -> download (with --download-sections if cut) -> vertical_fast (9:16, Majalla card, @mventor) -> upload TikTok
-  Progress edits same message + final post link + video document.
+  user sends URL + optional cut + Template 01/00 + description
+   -> verify -> download (with --download-sections if cut) -> vertical_fast (9:16, Majalla card for 01, clean for 00) -> upload TikTok
+   Template 01 = 9:16 + Majalla card 0.94w 1.95×h + @mventor; Template 00 = same 9:16 but no card burned, desc only as post text.
+   Progress edits same message + final post link + video document.
 
 Only ALLOWED_CHAT_ID (7830528991) may trigger jobs. Handler is async, long jobs via asyncio.create_task.
 """
@@ -95,9 +96,43 @@ def parse_template(text: str) -> str:
     m = re.search(r"template\s*0?\s*(\d{1,2})", text or "", re.I)
     if m:
         num = m.group(1).lstrip("0") or "0"
-        # spec expects 01 for template 1
+        # spec expects 01 for template 1, 00 for template 00 (no card)
         return num.zfill(2)
     return "01"
+
+
+def _has_no_watermark(text: str) -> bool:
+    return bool(re.search(r"no[\s\-_]*watermark|--no-watermark|without watermark", text or "", re.I))
+
+
+def _extract_raw_caption(text: str, url: str | None) -> str:
+    """Caption for Template 00: raw Description: value or trailing text, else empty (no defaults)."""
+    raw_text = text or ""
+    m = re.search(r"description\s+is\s*:\s*(.*)", raw_text, re.I | re.S)
+    if m:
+        raw = m.group(1).strip()
+        raw = re.sub(r"^\s*template\s*0?\s*\d+\s*[-–—]*\s*", "", raw, flags=re.I)
+        cleaned = _strip_cuts(raw)
+        cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
+        cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
+        cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.strip()
+    if url and url in raw_text:
+        rest = raw_text.split(url, 1)[1]
+    else:
+        rest = raw_text
+    cleaned = _strip_cuts(rest)
+    cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^\s*[-–—,;:\s]+", "", cleaned)
+    cleaned = re.sub(r"\s*[-–—,;:\s]+$", "", cleaned)
+    cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
+    cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"^(-\s*)+", "", cleaned).strip()
+    return cleaned.strip()
 
 
 def _strip_cuts(text: str) -> str:
@@ -166,12 +201,27 @@ def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
 def parse_message(text: str) -> dict:
     """Parse Telegram message text into job params.
 
-    Returns dict with url, start, end, template, title, subtitle, caption, raw_cut.
+    Returns dict with url, start, end, template, title, subtitle, caption, raw_cut, handle.
+    Template 00: no burned card — title/subtitle forced empty, caption is raw Description: if any else "".
+    Watermark: default @mventor unless text contains no watermark / --no-watermark.
     """
     url = _extract_url(text)
     start, end, raw_cut = parse_time_cut(text)
     template = parse_template(text)
-    title, subtitle, caption = parse_description(text, url)
+    handle = "" if _has_no_watermark(text) else "@mventor"
+    if template == "00":
+        caption = _extract_raw_caption(text, url)
+        title = ""
+        subtitle = ""
+    else:
+        title, subtitle, caption = parse_description(text, url)
+        # strip watermark phrase from caption/title if user typed it (so it doesn't burn into card)
+        if _has_no_watermark(text):
+            # clean caption of watermark remnants
+            caption = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", caption, flags=re.I).strip()
+            caption = re.sub(r"\s+", " ", caption).strip(" -–—,;:")
+            title = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", title, flags=re.I).strip()
+            subtitle = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", subtitle, flags=re.I).strip()
     return {
         "url": url,
         "start": start,
@@ -181,6 +231,7 @@ def parse_message(text: str) -> dict:
         "title": title,
         "subtitle": subtitle,
         "caption": caption,
+        "handle": handle,
     }
 
 
@@ -208,6 +259,19 @@ def dry_run_mode() -> int:
         (
             "https://www.tiktok.com/@user/video/12345 and the description is : my custom caption",
             {"url": "https://www.tiktok.com/@user/video/12345", "start": None, "end": None, "template": "01", "title_contains": "my custom caption"},
+        ),
+        # Template 00 — no burned card, clean vertical
+        (
+            "https://www.youtube.com/watch?v=IvaxAtX4abc Template 00 - Cut 0.25 to 1.00",
+            {"url": "https://www.youtube.com/watch?v=IvaxAtX4abc", "start": 25, "end": 60, "template": "00", "title": "", "subtitle": ""},
+        ),
+        (
+            "https://www.youtube.com/watch?v=IvaxAtX4abc Template 00 and the description is : hello world caption",
+            {"url": "https://www.youtube.com/watch?v=IvaxAtX4abc", "start": None, "end": None, "template": "00", "title": "", "subtitle": "", "caption": "hello world caption"},
+        ),
+        (
+            "https://www.youtube.com/watch?v=IvaxAtX4abc Template 00 --no-watermark",
+            {"url": "https://www.youtube.com/watch?v=IvaxAtX4abc", "start": None, "end": None, "template": "00", "title": "", "subtitle": "", "handle": ""},
         ),
     ]
     ok = True
@@ -340,6 +404,7 @@ def _build_bot():
         subtitle = parsed["subtitle"]
         caption = parsed["caption"]
         template = parsed["template"]
+        handle = parsed.get("handle", "@mventor")
         platform = job.get("platform", "") or JobStore.detect_platform(url) or ""
         bot = context.bot
 
@@ -468,7 +533,7 @@ def _build_bot():
         try:
             from scripts.tiktok_vertical_fast import vertical_fast
 
-            await asyncio.to_thread(vertical_fast, Path(video_path), out_path, title, subtitle, "card", "#EAB308", "@mventor")
+            await asyncio.to_thread(vertical_fast, Path(video_path), out_path, title, subtitle, "card", "#EAB308", handle)
             ok = out_path.exists() and out_path.stat().st_size > 0
             err = None if ok else "render produced no file"
         except Exception as e:
@@ -509,7 +574,11 @@ def _build_bot():
             store.set_state(store.load(job_id), UPLOADING)
         except Exception:
             pass
-        desc = caption or f"{title} - {subtitle}"
+        # Template 00: caption is TikTok post description (not burned); template 01: burned card + caption
+        if template == "00":
+            desc = caption  # may be "" — clean video, post desc from Description: only
+        else:
+            desc = caption or f"{title} - {subtitle}"
         # publisher will add hashtags if missing
         try:
             from scripts.publish_template01 import upload_tiktok

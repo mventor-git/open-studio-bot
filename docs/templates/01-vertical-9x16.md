@@ -1,6 +1,15 @@
-# Template 01 — 9:16 TikTok Vertical (1080x1920)
+# Templates 00 / 01 — 9:16 TikTok Vertical (1080x1920)
 
 **For 16:9 source → 9:16 TikTok. Fast single-pass render + two-step publish.**
+
+## Templates
+
+| Template | In-video burn | Watermark | TikTok post description |
+|----------|---------------|-----------|-------------------------|
+| **01** | 9:16 + Majalla card (0.94 wide, 1.95× tall, gold #EAB308) + Arabic shaping, pill/banner optional | `@mventor` top-left Segoe UI (handle) — stays unless `--no-watermark` | `Description:` / trailing text is **burned** as title/subtitle card AND used as post description |
+| **00** | **No card burned** — same 9:16 blurred 16:9 fill + sharp center, but **no title/subtitle overlay**. Video is clean. `--title "" --subtitle ""` internally. | Same `@mventor` unless `--no-watermark` / `--handle none` / message contains `no watermark` | `Description:` / trailing text is **only** TikTok post description (text under video), **never burned** into pixels. If empty, post desc is empty (or hashtags auto-added). |
+
+Detection in bot: `Template 00` or `template 00` case-insensitive → template `"00"` → title `""`, subtitle `""`, handle from watermark flag. `Template 01` (default) uses `سعدني في الحضارة` / `صفات القائد` defaults if no Description.
 
 ## Spec
 
@@ -20,25 +29,42 @@
 
 `scripts/tiktok_vertical_fast.py` — **no per-frame loop**. Pillow draws ONE overlay PNG (card+handle) → ffmpeg does blurred bg + sharp fg + overlay in one `filter_complex` (~25s for 51s video vs 3min).
 
-```
+```bash
+# Template 01 — with card
 python scripts/tiktok_vertical_fast.py --source jobs/media/qaid_seg.mp4 --out jobs/media/qaid_tiktok.mp4 \
   --title "سعدني في الحضارة" --subtitle "صفات القائد" --style card
+
+# Template 00 — clean, no card (overlay transparent unless watermark)
+python scripts/tiktok_vertical_fast.py --source jobs/media/qaid_seg.mp4 --out jobs/media/test_00.mp4 \
+  --title "" --subtitle "" --style card
+# no watermark variant
+python scripts/tiktok_vertical_fast.py --source jobs/media/qaid_seg.mp4 --out jobs/media/test_00_nowm.mp4 \
+  --title "" --subtitle "" --no-watermark
 ```
+
+`make_overlay()` skips `render()` when `title` and `subtitle` both empty → transparent PNG (or watermark-only); ffmpeg still composites correctly at 1080×1920.
 
 ## Publisher (end-to-end)
 
-`scripts/publish_template01.py` — **single command** for Template 01:
+`scripts/publish_template01.py` — **single command** for Template 01/00:
 
-```
+```bash
+# Template 01
 python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 \
   --title "سعدني في الحضارة" --subtitle "صفات القائد"
 # -> jobs/media/qaid_seg_tiktok.mp4 (1080x1920) -> TikTok Studio
+
+# Template 00 — clean (no card, desc only as post text)
+python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --template 00 --desc "hello caption" --no-upload
+python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --template 00 --no-watermark --no-upload  # also no handle
 
 python scripts/publish_template01.py --source in.mp4 --out jobs/media/my_tiktok.mp4 --no-upload  # render only
 python scripts/publish_template01.py --source in.mp4 --dry-run  # verify without upload
 ```
 
-Args: `--source` (required, 16:9 input), `--title`, `--subtitle`, `--out` (default `jobs/media/<stem>_tiktok.mp4`), `--style card|pill|banner`, `--accent`, `--handle`, `--no-upload`, `--dry-run`, `--headless`.
+Args: `--source` (required, 16:9 input), `--title`, `--subtitle`, `--template 01|00` (00 forces empty title/subtitle), `--desc`/`--caption` (post description, for 00 not burned), `--out` (default `jobs/media/<stem>_tiktok.mp4`), `--style card|pill|banner`, `--accent`, `--handle`, `--no-watermark`, `--no-upload`, `--dry-run`, `--headless`.
+
+Bot wiring: `bot.py:parse_message` detects `Template 00` → `title="" subtitle="" caption=Description:` only; `Template 01` → title/subtitle from Description with defaults `سعدني في الحضارة` / `صفات القائد`. Upload uses `caption` for 00, `caption or title - subtitle` for 01. Watermark flag `no watermark` / `--no-watermark` → `handle=""`.
 
 Steps:
 1. **Render** — calls `tiktok_vertical_fast.vertical_fast()` → 1080×1920 mp4, logs `probe` verification, screenshots `screenshots/template01_*.png`.

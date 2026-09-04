@@ -9,6 +9,11 @@ Usage (run in YOUR terminal window, not the agent CLI):
 
 Burns the caption IN the pixels (Pillow drawText with arabic shaping) and the
 TikTok note logo + @mventor handle, all physically in the video.
+
+Templates:
+  01 = 9:16 vertical + Majalla card (0.94 wide, 1.95x tall) + @mventor watermark
+  00 = same 9:16 vertical BUT no card burned (--title "" --subtitle "") — clean video, optional watermark via --handle / --no-watermark
+     TikTok post description (text under video) is NOT burned into pixels.
 """
 from __future__ import annotations
 
@@ -38,12 +43,17 @@ def probe_duration(path: Path) -> float:
 
 
 def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str) -> Path:
-    """Render ONE transparent overlay PNG with caption card + watermark."""
+    """Render ONE transparent overlay PNG with caption card + watermark.
+
+    Template 00: title == "" and subtitle == "" => no card is drawn, only watermark if handle != "".
+    Result is fully transparent (or watermark-only) and ffmpeg still does 9:16 conversion correctly.
+    """
     def hex_rgba(h: str):
         h = h.lstrip("#")
         return tuple(int(h[i:i+2], 16) for i in (0,2,4)) + (255,)
     accent_rgba = hex_rgba(accent)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    # ponytail: no overlay file vs transparent png — transparent still compositable, simplest path
     if title or subtitle:
         img = render(img, title, subtitle, style=style, accent=accent_rgba)
     if handle:

@@ -1,20 +1,26 @@
 #!/usr/bin/env python
-"""Template 01 publisher — single command end-to-end (fast vertical + TikTok Studio upload).
+"""Template 01/00 publisher — single command end-to-end (fast vertical + TikTok Studio upload).
 
-Spec (Template 01 — 9:16 TikTok vertical for 16:9 source):
+Spec:
+  Template 01 = 9:16 vertical (1080x1920, blurred 16:9 fill, sharp center) + Majalla card (0.94 wide, 1.95x tall) + @mventor top-left Segoe UI + Arabic shaping
+  Template 00 = same 9:16 vertical BUT NO caption card burned into pixels (--title "" --subtitle ""). Clean video. Watermark optional via --no-watermark / --handle none; default keeps @mventor.
+              TikTok post description (text under video) can still be set via --desc / Description: field, but never burned.
+
+  Common:
   - Output: 1080x1920, blurred fill + sharp center (ffmpeg filter_complex)
-  - Caption card: width 0.94, height 1.95x base, Sakkal Majalla, accent gold #EAB308
-  - Watermark: @mventor top-left, Segoe UI, size 0.032 of height
+  - Caption card (01 only): width 0.94, height 1.95x base, Sakkal Majalla, accent gold #EAB308
+  - Watermark: @mventor top-left, Segoe UI, size 0.032 of height (both templates unless --no-watermark)
   - Source: scripts/tiktok_vertical_fast.py (single overlay PNG + ffmpeg, ~25s/51s)
   - Publish: two-step نشر -> النشر الآن confirm modal + scroll fix (y1488>1080)
 
 Usage:
-  python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --title "سعدني" --subtitle "صفات القائد"
+  python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --title "سعدني" --subtitle "صفات القائد"  # 01
+  python scripts/publish_template01.py --source jobs/media/qaid_seg.mp4 --template 00 --desc "hello" --no-upload  # 00 clean
   python scripts/publish_template01.py --source in.mp4 --out jobs/media/my_tiktok.mp4 --no-upload  # render only
   python scripts/publish_template01.py --source in.mp4 --title "X" --dry-run  # verify without upload
 
 Flow:
-  Step 1: render 9:16 via tiktok_vertical_fast.vertical_fast()
+  Step 1: render 9:16 via tiktok_vertical_fast.vertical_fast()  (template 00 => empty title/subtitle => transparent card)
   Step 2: upload via Playwright (Waterfox cookies tmpck.sqlite fallback, Skip + confirm modal)
   Returns TikTok URL on success, screenshots -> screenshots/template01_*.png
 """
@@ -624,14 +630,25 @@ def main() -> int:
     ap.add_argument("--source", required=True, help="16:9 input video")
     ap.add_argument("--title", default=DEFAULT_TITLE, help="Arabic title (card line 1)")
     ap.add_argument("--subtitle", default=DEFAULT_SUBTITLE, help="Arabic subtitle (card line 2)")
+    ap.add_argument("--template", default="01", help="01 = card + watermark, 00 = clean vertical no card (title/subtitle ignored)")
+    ap.add_argument("--desc", "--caption", dest="desc", default=None, help="TikTok post description (for 00, text under video not burned)")
     ap.add_argument("--out", default=None, help="output 1080x1920 mp4 (default jobs/media/<stem>_tiktok.mp4)")
     ap.add_argument("--style", default="card", choices=["card","pill","banner"])
     ap.add_argument("--accent", default="#EAB308")
-    ap.add_argument("--handle", default="@mventor")
+    ap.add_argument("--handle", default="@mventor", help="@handle watermark, use 'none' to disable")
+    ap.add_argument("--no-watermark", action="store_true", help="disable @mventor watermark (same as --handle none)")
     ap.add_argument("--no-upload", action="store_true", help="render only, skip upload")
     ap.add_argument("--dry-run", action="store_true", help="render + verify upload code without actually uploading")
     ap.add_argument("--headless", action="store_true", help="headless upload (default headed for anti-bot)")
     args = ap.parse_args()
+    # normalize template
+    tmpl = args.template.strip().zfill(2)
+    if tmpl == "00":
+        # Template 00: force no burned card regardless of --title/--subtitle defaults
+        args.title = ""
+        args.subtitle = ""
+    else:
+        tmpl = "01"
 
     source = Path(args.source)
     if not source.exists():
@@ -644,10 +661,10 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: render 9:16
-    log(f"Step 1/2: render {W}x{H} vertical — source={source} title='{args.title}' subtitle='{args.subtitle}' out={out}")
+    # Step 1: render 9:16  (template 00 => empty title/subtitle => transparent overlay, no card burned)
+    log(f"Step 1/2: render {W}x{H} vertical template={tmpl} — source={source} title='{args.title}' subtitle='{args.subtitle}' out={out}")
     t0=time.time()
-    handle = "" if args.handle=="none" else args.handle
+    handle = "" if (args.no_watermark or args.handle=="none") else args.handle
     try:
         render_vertical(source, out, args.title, args.subtitle, args.style, args.accent, handle)
     except SystemExit as e:
@@ -689,12 +706,22 @@ def main() -> int:
 
     # Step 2: upload
     log(f"Step 2/2: upload to TikTok Studio — {out}")
-    desc = f"{args.title} - {args.subtitle}".strip(" -")
-    if not desc:
-        desc = f"{args.title} #حضارة #قيادة"
-    # combine title+subtitle as description with hashtags if needed
-    if "#" not in desc:
-        desc += " #حضارة #قيادة #تاريخ"
+    if tmpl == "00":
+        # 00: post description from --desc only (never burned into pixels), else empty
+        desc = (args.desc or "").strip()
+        if desc and "#" not in desc:
+            desc += " #حضارة #قيادة #تاريخ"
+    else:
+        if args.desc:
+            desc = args.desc.strip()
+            if desc and "#" not in desc:
+                desc += " #حضارة #قيادة #تاريخ"
+        else:
+            desc = f"{args.title} - {args.subtitle}".strip(" -")
+            if not desc:
+                desc = f"{args.title} #حضارة #قيادة"
+            if "#" not in desc:
+                desc += " #حضارة #قيادة #تاريخ"
     result = upload_tiktok(out, desc, headless=args.headless)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("ok"):
