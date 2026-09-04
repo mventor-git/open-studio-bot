@@ -32,7 +32,13 @@ def hex_to_rgb(hexstr: str) -> tuple:
 
 def verticalize(source: Path, out: Path, title: str, subtitle: str,
                 style: str, accent_hex: str, width: int = 1080, height: int = 1920,
-                handle: str = "@mventor", watermark: bool = True) -> Path:
+                handle: str | None = None, watermark: bool = True) -> Path:
+    if handle is None:
+        try:
+            from config import config as _cfg
+            handle = _cfg.watermark_handle or ""
+        except Exception:
+            handle = ""
     cap = cv2.VideoCapture(str(source))
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -100,9 +106,15 @@ def main() -> int:
     ap.add_argument("--subtitle", default="")
     ap.add_argument("--style", default="card", choices=["card", "pill", "banner"])
     ap.add_argument("--accent", default="#EAB308")
-    ap.add_argument("--handle", default="@mventor")
+    ap.add_argument("--handle", default=None, help="watermark handle, defaults to WATERMARK_HANDLE env (empty=skip)")
     ap.add_argument("--no-watermark", action="store_true")
     args = ap.parse_args()
+    if args.handle is None:
+        try:
+            from config import config as _cfg
+            args.handle = _cfg.watermark_handle or ""
+        except Exception:
+            args.handle = ""
     verticalize(Path(args.source), Path(args.out), args.title, args.subtitle,
                 args.style, args.accent, handle=args.handle, watermark=not args.no_watermark)
     print(f"OK -> {args.out}")

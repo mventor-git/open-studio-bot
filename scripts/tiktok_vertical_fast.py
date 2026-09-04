@@ -8,11 +8,11 @@ Usage (run in YOUR terminal window, not the agent CLI):
   python scripts/tiktok_vertical_fast.py --source jobs/media/qaid_seg.mp4 --out jobs/media/qaid_tiktok.mp4 --title "سعدني في الحضارة" --subtitle "صفات القائد" --style card
 
 Burns the caption IN the pixels (Pillow drawText with arabic shaping) and the
-TikTok note logo + @mventor handle, all physically in the video.
+TikTok note logo + watermark handle (if set), all physically in the video.
 
 Templates:
-  01 = 9:16 vertical + Majalla card (0.94 wide, 1.95x tall) + @mventor watermark
-  00 = same 9:16 vertical BUT no card burned (--title "" --subtitle "") — clean video, optional watermark via --handle / --no-watermark
+  01 = 9:16 vertical + Majalla card (0.94 wide, 1.95x tall) + watermark handle (if set)
+  00 = same 9:16 vertical BUT no card burned (--title "" --subtitle "") — clean video, optional watermark via --handle / --no-watermark (empty handle = skip watermark)
      TikTok post description (text under video) is NOT burned into pixels.
 """
 from __future__ import annotations
@@ -43,9 +43,9 @@ def probe_duration(path: Path) -> float:
 
 
 def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str | None = None) -> Path:
+    """Render ONE transparent overlay PNG with caption card + watermark."""
     if handle is None:
-        handle = config.watermark_handle
-    """Render ONE transparent overlay PNG with caption card + watermark.
+        handle = config.watermark_handle or ""
 
     Template 00: title == "" and subtitle == "" => no card is drawn, only watermark if handle != "".
     Result is fully transparent (or watermark-only) and ffmpeg still does 9:16 conversion correctly.
@@ -67,7 +67,7 @@ def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str
 
 def vertical_fast(source: Path, out: Path, title: str, subtitle: str, style: str, accent: str, handle: str | None = None):
     if handle is None:
-        handle = config.watermark_handle
+        handle = config.watermark_handle or ""
     overlay = make_overlay(title, subtitle, style, accent, handle)
     dur = probe_duration(source)
     if dur <= 0:
@@ -107,12 +107,12 @@ def main() -> int:
     ap.add_argument("--subtitle", default="صفات القائد")
     ap.add_argument("--style", default="card", choices=["card", "pill", "banner"])
     ap.add_argument("--accent", default="#EAB308")
-    ap.add_argument("--handle", default=None, help="watermark handle, defaults to WATERMARK_HANDLE env")
+    ap.add_argument("--handle", default=None, help="watermark handle, defaults to WATERMARK_HANDLE env (empty=skip)")
     ap.add_argument("--no-watermark", action="store_true")
     args = ap.parse_args()
     if args.handle is None:
-        args.handle = config.watermark_handle
-    handle = "" if args.no_watermark else args.handle
+        args.handle = config.watermark_handle or ""
+    handle = "" if args.no_watermark else (args.handle or "")
     vertical_fast(Path(args.source), Path(args.out), args.title, args.subtitle, args.style, args.accent, handle)
     return 0
 

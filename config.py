@@ -48,7 +48,7 @@ class Config:
     # Telegram
     bot_token: str = field(default_factory=lambda: os.environ.get("BOT_TOKEN", ""))
     allowed_chat_id: int = field(
-        default_factory=lambda: int(os.environ.get("ALLOWED_CHAT_ID", "0"))
+        default_factory=lambda: int((os.environ.get("ALLOWED_CHAT_ID") or "0").strip() or "0")
     )
 
     # opencode serve
@@ -69,19 +69,19 @@ class Config:
     # Storage
     jobs_dir: Path = field(default_factory=lambda: REPO_ROOT / "jobs")
     max_uploads_per_day: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_UPLOADS_PER_DAY", "3"))
+        default_factory=lambda: int((os.environ.get("MAX_UPLOADS_PER_DAY") or "3").strip() or "3")
     )
 
     # Download limits
     max_resolution: str = field(default_factory=lambda: os.environ.get("MAX_RESOLUTION", "720p"))
     max_duration_seconds: int = field(
-        default_factory=lambda: int(os.environ.get("MAX_DURATION_SECONDS", "600"))
+        default_factory=lambda: int((os.environ.get("MAX_DURATION_SECONDS") or "600").strip() or "600")
     )
 
-    # Handles (T7)
-    tiktok_handle: str = field(default_factory=lambda: os.environ.get("TIKTOK_HANDLE", "@videosforall19"))
-    watermark_handle: str = field(default_factory=lambda: os.environ.get("WATERMARK_HANDLE", "@mventor"))
-    cookie_check_hours: int = field(default_factory=lambda: int(os.environ.get("COOKIE_CHECK_HOURS", "24")))
+    # Handles — empty until user sets via /set_handle or /set_tiktok; watermark skipped if empty
+    tiktok_handle: str = field(default_factory=lambda: (os.environ.get("TIKTOK_HANDLE") or "").strip())
+    watermark_handle: str = field(default_factory=lambda: (os.environ.get("WATERMARK_HANDLE") or "").strip())
+    cookie_check_hours: int = field(default_factory=lambda: int((os.environ.get("COOKIE_CHECK_HOURS") or "24").strip() or "24"))
 
     # Bundled ffmpeg/ffprobe (portable install under tools/)
     ffmpeg_dir: Path = field(default_factory=lambda: REPO_ROOT / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin")
@@ -100,6 +100,7 @@ def check_config() -> list[str]:
         problems.append("BOT_TOKEN is not set (Telegram bot will not start)")
     if config.allowed_chat_id <= 0:
         problems.append("ALLOWED_CHAT_ID is not set (bot would answer anyone)")
+    # handles intentionally not required here — bot prompts via /set_handle /set_tiktok if empty
     if not (config.ffmpeg_dir / "ffprobe.exe").exists():
         problems.append(f"ffprobe not found in {config.ffmpeg_dir} (audio check will fail)")
     if not config.waterfox_profile.exists():
@@ -148,7 +149,7 @@ def persist_handle(handle: str) -> str:
     Returns normalized handle."""
     norm = _normalize_handle(handle)
     if not norm:
-        raise ValueError("handle required, e.g. @videosforall19")
+        raise ValueError("handle required, e.g. @handle")
     # update live config + env
     config.tiktok_handle = norm
     config.watermark_handle = norm

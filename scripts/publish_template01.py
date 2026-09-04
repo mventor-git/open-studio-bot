@@ -2,14 +2,14 @@
 """Template 01/00 publisher — single command end-to-end (fast vertical + TikTok Studio upload).
 
 Spec:
-  Template 01 = 9:16 vertical (1080x1920, blurred 16:9 fill, sharp center) + Majalla card (0.94 wide, 1.95x tall) + @mventor top-left Segoe UI + Arabic shaping
-  Template 00 = same 9:16 vertical BUT NO caption card burned into pixels (--title "" --subtitle ""). Clean video. Watermark optional via --no-watermark / --handle none; default keeps @mventor.
-              TikTok post description (text under video) can still be set via --desc / Description: field, but never burned.
+  Template 01 = 9:16 vertical (1080x1920, blurred 16:9 fill, sharp center) + Majalla card (0.94 wide, 1.95x tall) + watermark handle (if set) top-left Segoe UI + Arabic shaping
+  Template 00 = same 9:16 vertical BUT NO caption card burned into pixels (--title "" --subtitle ""). Clean video. Watermark optional via --no-watermark / --handle none; default uses WATERMARK_HANDLE env (empty=skip watermark).
+               TikTok post description (text under video) can still be set via --desc / Description: field, but never burned.
 
   Common:
   - Output: 1080x1920, blurred fill + sharp center (ffmpeg filter_complex)
   - Caption card (01 only): width 0.94, height 1.95x base, Sakkal Majalla, accent gold #EAB308
-  - Watermark: @mventor top-left, Segoe UI, size 0.032 of height (both templates unless --no-watermark)
+  - Watermark: watermark handle top-left, Segoe UI, size 0.032 of height (both templates unless --no-watermark or handle empty)
   - Source: scripts/tiktok_vertical_fast.py (single overlay PNG + ffmpeg, ~25s/51s)
   - Publish: two-step نشر -> النشر الآن confirm modal + scroll fix (y1488>1080)
 
@@ -58,7 +58,7 @@ from scripts.tiktok_vertical_fast import W, H
 STUDIO_URL = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video"
 CONTENT_URL = "https://www.tiktok.com/tiktokstudio/content"
 SCREENSHOT_DIR = REPO_ROOT / "screenshots"
-# Waterfox cookie sources — tmpck.sqlite fallback proven in retry6 (31 cookies, videosforall19)
+# Waterfox cookie sources — tmpck.sqlite fallback proven in retry6 (cookies)
 COOKIES_TMP = Path(r"C:\Users\Mventor\AppData\Local\Temp\tmpck.sqlite")
 COOKIES_WATERFOX = Path(r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles\yixam57i.default-release\cookies.sqlite")
 
@@ -705,7 +705,7 @@ def main() -> int:
     ap.add_argument("--style", default="card", choices=["card","pill","banner"])
     ap.add_argument("--accent", default="#EAB308")
     ap.add_argument("--handle", default=None, help="@handle watermark, use 'none' to disable (defaults to WATERMARK_HANDLE env)")
-    ap.add_argument("--no-watermark", action="store_true", help="disable @mventor watermark (same as --handle none)")
+    ap.add_argument("--no-watermark", action="store_true", help="disable watermark (same as --handle none)")
     ap.add_argument("--no-upload", action="store_true", help="render only, skip upload")
     ap.add_argument("--dry-run", action="store_true", help="render + verify upload code without actually uploading")
     ap.add_argument("--headless", action="store_true", help="headless upload (default headed for anti-bot)")
@@ -733,9 +733,9 @@ def main() -> int:
     # Step 1: render 9:16  (template 00 => empty title/subtitle => transparent overlay, no card burned)
     log(f"Step 1/2: render {W}x{H} vertical template={tmpl} — source={source} title='{args.title}' subtitle='{args.subtitle}' out={out}")
     if args.handle is None:
-        args.handle = config.watermark_handle
+        args.handle = config.watermark_handle or ""
     t0=time.time()
-    handle = "" if (args.no_watermark or args.handle=="none") else args.handle
+    handle = "" if (args.no_watermark or args.handle=="none" or not args.handle) else args.handle
     try:
         render_vertical(source, out, args.title, args.subtitle, args.style, args.accent, handle)
     except SystemExit as e:

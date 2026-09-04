@@ -72,7 +72,7 @@ INVALID_URL = "❌ Invalid or not downloadable — please send a valid video URL
 
 WIZARD_THUMB_CAPTION = "🎞️ {title}\n📺 {channel}\n⏱️ {duration}"
 WIZARD_TEMPLATE_PROMPT = (
-    "Select template no. — 00 (raw, no card) or 01 (9:16 + card + @mventor) — "
+    "Select template no. — 00 (raw, no card) or 01 (9:16 + card + watermark) — "
     "type 00 or 01 or nothing (defaults to 00)"
 )
 WIZARD_TEMPLATE_SAVED = "✅ Template {template} saved"

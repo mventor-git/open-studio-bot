@@ -172,13 +172,15 @@ def draw_tiktok_note(draw: ImageDraw.ImageDraw, cx: float, cy: float, size: floa
 
 def tiktok_watermark(img: Image.Image, handle: str | None = None, size_frac: float = 0.032,
                      pad_frac: float = 0.035, corner: str = "top-left") -> Image.Image:
-    """TikTok note logo + @handle watermark — small, clean, top-left corner."""
+    """TikTok note logo + @handle watermark — small, clean, top-left corner. Skipped if handle empty."""
     if handle is None:
         try:
             from config import config as _cfg
-            handle = _cfg.watermark_handle
+            handle = _cfg.watermark_handle or ""
         except Exception:
-            handle = "@mventor"
+            handle = ""
+    if not handle:
+        return img
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
     # Latin handle: clean Segoe UI, not Arabic font, smaller

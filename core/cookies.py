@@ -172,9 +172,9 @@ def verify_tiktok_session() -> dict[str, Any]:
                 # alternative: check for upload keyword and via isUpload:true literal
                 # We do loose check: if body contains isUpload
                 # Also check uniqueId
-                handle = config.tiktok_handle.lstrip("@").lower() if config.tiktok_handle else "videosforall19"
+                handle = config.tiktok_handle.lstrip("@").lower() if config.tiktok_handle else ""
                 # Check body contains handle (uniqueId) — TikTok embeds JSON with uniqueId
-                handle_in_body = handle in body.lower()
+                handle_in_body = bool(handle) and handle in body.lower()
                 # Heuristic: if page is login wall, body will contain "Log in" / "Sign up" prominent and not contain creator center
                 is_login_wall = ("log in to tiktok" in body.lower() or "sign up" in body.lower()) and "tiktokstudio" not in body.lower()[:2000]
                 # For Studio upload page, expect isUpload:true. If not found, consider fail unless handle present?

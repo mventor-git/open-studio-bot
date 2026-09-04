@@ -105,7 +105,16 @@ class JobStore:
     def set_state(self, job: dict[str, Any], state: str) -> dict[str, Any]:
         if state not in ACTIVE_STATES | TERMINAL_STATES:
             raise JobError(f"unknown state: {state}")
-        return self.update(job, state=state)
+        updated = self.update(job, state=state)
+        # log terminal states to CSV (Arabic-safe utf-8-sig)
+        if state in TERMINAL_STATES:
+            try:
+                from core.logger import log_job
+
+                log_job(updated)
+            except Exception:
+                pass
+        return updated
 
     def active_job(self) -> Optional[dict[str, Any]]:
         """Oldest active job by creation time (queue order), not filename order."""

@@ -7,3 +7,5 @@ jobs/media/
 tests/media/
 screenshots/
 tools/
+logs/*.csv
+!logs/.gitkeep

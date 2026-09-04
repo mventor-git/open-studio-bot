@@ -7,7 +7,7 @@ Run modes:
 
 Wizard v2 Flow:
   1. User sends /url or pastes URL (with or without time cut). Bot verifies: good video = URL contains video AND downloadable via yt-dlp probe (verify_url). If not downloadable, reply "Invalid or not downloadable" and ask for new URL.
-  2. Bot sends frame photo + default description: after verify, download thumbnail via yt-dlp --get-thumbnail or extract frame at 1s via ffmpeg, send as photo with caption containing default title/channel/duration from probe. Also reply with "Select template no. — 00 (raw, no card) or 01 (9:16 + card + @mventor) — type 00 or 01 or nothing (defaults to 00)"
+  2. Bot sends frame photo + default description: after verify, download thumbnail via yt-dlp --get-thumbnail or extract frame at 1s via ffmpeg, send as photo with caption containing default title/channel/duration from probe. Also reply with "Select template no. — 00 (raw, no card) or 01 (9:16 + card + watermark) — type 00 or 01 or nothing (defaults to 00)"
   3. User types template: 00 or 01 or empty -> default 00. Bot stores template.
   4. Bot asks: "Select cut 00:00 to 00:00 (video is 00:00-19:05)" - show duration. If user already sent cut (e.g., "Cut 0.25 to 1.00" parsed as 25s-60s), skip this step. If no cut and full video: Bot randomly picks ONE 30s section to cut (single slice, not montage). Logic: random start = randint(0, duration-30), end = start+30. If video <30s, use full video.
   5. Bot asks: "Type Description (or skip — I'll take it from the video URL itself)" - if user skips (sends /skip or empty), use yt-dlp title/description as caption.
@@ -18,7 +18,7 @@ Wizard v2 Flow:
 
 Per-chat wizard state stored in memory dict WIZARD: {step, url, template, cut_start, cut_end, description, hashtags, video_path, preview_path, duration, title, channel, job_id, probe}
 
-Only ALLOWED_CHAT_ID (7830528991) may trigger jobs. Handler is async, long jobs via asyncio.create_task.
+Only ALLOWED_CHAT_ID may trigger jobs (from env). Handler is async, long jobs via asyncio.create_task.
 """
 
 from __future__ import annotations
@@ -325,12 +325,12 @@ def parse_message(text: str) -> dict:
 
     Returns dict with url, start, end, template, title, subtitle, caption, raw_cut, handle, description, hashtags.
     Template 00: no burned card — title/subtitle forced empty, caption is raw Description: if any else "".
-    Watermark: default WATERMARK_HANDLE unless text contains no watermark / --no-watermark.
+    Watermark: default WATERMARK_HANDLE (empty = skip) unless text contains no watermark / --no-watermark.
     """
     url = _extract_url(text)
     start, end, raw_cut = parse_time_cut(text)
     template = parse_template(text)
-    handle = "" if _has_no_watermark(text) else config.watermark_handle
+    handle = "" if _has_no_watermark(text) else (config.watermark_handle or "")
     # hashtags extraction: find #tags; if none but user might have typed bare hashtags, fallback handled by caller
     hashtags = extract_hashtags_from_text(text)
     # if no #tags found but the text after Description: contains bare words that caller considers hashtags, we leave empty here and wizard step will normalize separately
@@ -868,7 +868,7 @@ def _build_bot():
                 pass
             registry.clear(job_id)
             return
-        tiktok_url = res.get("url") or f"https://www.tiktok.com/{config.tiktok_handle.lstrip('@')}"
+        tiktok_url = res.get("url") or (f"https://www.tiktok.com/{config.tiktok_handle.lstrip('@')}" if config.tiktok_handle else "https://www.tiktok.com/tiktokstudio/content")
         try:
             await bot.send_message(chat_id=chat_id, text=msgs.POSTED.format(link=tiktok_url))
         except Exception:
@@ -1044,14 +1044,14 @@ def _build_bot():
         else:
             t_title = ""
             t_sub = ""
-        handle = config.watermark_handle
+        handle = config.watermark_handle or ""
         # Determine start/end for download
         start = cut_start
         end = cut_end
         # Create job store entry
         try:
             job = store.create(url, prompt=caption, template=template)
-            store.update(job, start=start, end=end, title=t_title, subtitle=t_sub, caption=caption, template=template, handle=handle, hashtags=hashtags, description=description)
+            store.update(job, start=start, end=end, title=t_title, subtitle=t_sub, caption=caption, template=template, handle=handle, hashtags=hashtags, description=description, tiktok_handle=config.tiktok_handle or "", watermark_handle=config.watermark_handle or "")
             wiz["job_id"] = job["id"]
             wiz["step"] = WIZARD_STEP_AWAITING_APPROVAL
             _wizard_set(chat_id, wiz)
@@ -1080,7 +1080,7 @@ def _build_bot():
         subtitle = parsed["subtitle"]
         caption = parsed["caption"]
         template = parsed["template"]
-        handle = parsed.get("handle", config.watermark_handle)
+        handle = parsed.get("handle", config.watermark_handle or "")
         platform = job.get("platform", "") or JobStore.detect_platform(url) or ""
         async def edit(text: str):
             await _edit(status_msg, text, chat_id, bot)
@@ -1310,6 +1310,16 @@ def _build_bot():
         except Exception:
             pass
 
+    async def _prompt_handle_if_empty(chat_id: int, bot):
+        # prompt user to set handle if empty (instead of hardcoded fallback)
+        try:
+            if not config.tiktok_handle or not config.watermark_handle:
+                cur_t = config.tiktok_handle or "(not set)"
+                cur_w = config.watermark_handle or "(not set)"
+                await bot.send_message(chat_id=chat_id, text=f"⚠️ Handle not set — TikTok: {cur_t}  Watermark: {cur_w}\nSet via /set_handle @myhandle  or  /set_tiktok @myhandle\nWatermark will be skipped until set.")
+        except Exception:
+            pass
+
     async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
             return
@@ -1318,6 +1328,11 @@ def _build_bot():
         # also prompt wizard
         try:
             await update.message.reply_text("Send /url or paste a video URL to start wizard v2")
+        except Exception:
+            pass
+        # if handles empty, prompt to set
+        try:
+            await _prompt_handle_if_empty(update.effective_chat.id, context.bot)
         except Exception:
             pass
 
@@ -1884,6 +1899,35 @@ def _build_bot():
         # alias to set_handle display
         await set_handle_cmd(update, context)
 
+    async def set_tiktok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # alias for /set_tiktok — same as /set_handle (sets both for simplicity)
+        await set_handle_cmd(update, context)
+
+    async def set_tiktok_cmd_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await set_handle_cmd(update, context)
+
+    async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        # ensure logs dir and CSV exists
+        try:
+            from core.logger import CSV_PATH
+            if not CSV_PATH.exists():
+                # ensure file created with header
+                from core.logger import _ensure_log_file
+                _ensure_log_file()
+            if not CSV_PATH.exists() or CSV_PATH.stat().st_size == 0:
+                await update.message.reply_text("No logs yet — jobs.csv is empty.")
+                return
+            # send document
+            with open(CSV_PATH, "rb") as f:
+                await context.bot.send_document(chat_id=update.effective_chat.id, document=f, filename="jobs.csv", caption=f"📊 Jobs log ({CSV_PATH.stat().st_size} bytes) — Excel-ready UTF-8 BOM, Arabic preserved")
+        except Exception as e:
+            try:
+                await update.message.reply_text(f"⚠️ logs send failed: {e}")
+            except Exception:
+                pass
+
     # --- T7 daily cookie verification loop ---
     async def _daily_cookie_loop(bot):
         # interval configurable COOKIE_CHECK_HOURS, default 24h
@@ -1949,7 +1993,10 @@ def _build_bot():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("interrupt", interrupt_cmd))
     app.add_handler(CommandHandler("set_handle", set_handle_cmd))
+    app.add_handler(CommandHandler("set_tiktok", set_tiktok_cmd))
     app.add_handler(CommandHandler("handle", handle_cmd))
+    app.add_handler(CommandHandler("tiktok", set_tiktok_cmd))
+    app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("retry", retry_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
