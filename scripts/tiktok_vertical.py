@@ -22,7 +22,7 @@ from config import config
 from scripts.caption_card import render, shape_ar, tiktok_watermark
 
 FFMPEG = config.ffmpeg_dir / "ffmpeg.exe"
-CAPTION = r"C:\Users\Mventor\tg-montage\jobs\media\caption_card.ttf"  # unused fallback
+CAPTION = Path(__file__).resolve().parents[1] / "jobs" / "media" / "caption_card.ttf"  # unused fallback
 
 
 def hex_to_rgb(hexstr: str) -> tuple:

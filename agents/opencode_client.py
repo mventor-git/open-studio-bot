@@ -9,7 +9,7 @@ Talks to a running `opencode serve` over HTTP. Resilient by design:
 
 The montage agent gets a fresh session per job, so the prompt must carry ALL
 context (video path, template, prompt, output expectations), and the session
-location is pinned to the OpenMontage repo so it reads the pipeline skills.
+location is pinned to the Open Studio Bot repo so it reads the pipeline skills.
 """
 from __future__ import annotations
 

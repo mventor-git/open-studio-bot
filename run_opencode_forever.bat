@@ -1,6 +1,10 @@
 @echo off
-title tg-montage opencode serve - forever
-cd /d C:\Users\Mventor\tg-montage
+rem Repo root = folder this script lives in
+set "REPO=%~dp0"
+set "REPO=%REPO:~0,-1%"
+
+title osb-opencode serve - forever
+cd /d "%REPO%"
 :loop
 echo [%date% %time%] Starting opencode serve --port 4096 ...
 opencode serve --port 4096

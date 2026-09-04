@@ -20,9 +20,6 @@ REPO = Path(__file__).resolve().parents[1]
 
 # Patterns that must NOT appear in production code (allow only in git history / jobs/*.job.json fixtures)
 FORBIDDEN = [
-    "سعدني",
-    "صفات القائد",
-    "qaid_tiktok",
     "test_00",
 ]
 

@@ -1,4 +1,4 @@
-"""tg-montage bot entry point — Telegram wizard v2.
+"""Open Studio Bot entry point — Telegram wizard v2.
 
 Run modes:
   python bot.py                 # long polling (requires BOT_TOKEN)

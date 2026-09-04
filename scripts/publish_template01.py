@@ -58,9 +58,9 @@ from scripts.tiktok_vertical_fast import W, H
 STUDIO_URL = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab=video"
 CONTENT_URL = "https://www.tiktok.com/tiktokstudio/content"
 SCREENSHOT_DIR = REPO_ROOT / "screenshots"
-# Waterfox cookie sources — tmpck.sqlite fallback proven in retry6 (cookies)
-COOKIES_TMP = Path(r"C:\Users\Mventor\AppData\Local\Temp\tmpck.sqlite")
-COOKIES_WATERFOX = Path(r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles\yixam57i.default-release\cookies.sqlite")
+# Waterfox cookie sources — temp copy first (DB is locked while browser runs)
+COOKIES_TMP = Path(tempfile.gettempdir()) / "tmpck.sqlite"
+COOKIES_WATERFOX = config.waterfox_profile  # dir; _find_cookie_db globs */cookies.sqlite
 
 # default caption: empty — fetch from video URL via yt-dlp probe when not provided
 DEFAULT_TITLE = ""
@@ -338,8 +338,10 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
 
     insert_text dumps one IME blob - TikTok's DraftJS editor never sees per-key
     events, so '#tag' stays plain text (no textExtra -> no hashtag page -> 0 views).
-    Fix: insert_text the plain text, then for each #tag: insert_text '#tag', press
-    a REAL Space key. Editor's hashtag detector commits on keypress space.
+    Fix: plain text via insert_text; each #tag typed char-by-char with
+    keyboard.type (real key events - the '#' keydown starts the editor's
+    hashtag detector, Arabic chars ride the input stream), then a REAL
+    Space keypress commits the entity.
     """
     import re as _re
     # tokens: hashtags vs plain text, keep order
@@ -348,8 +350,8 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     if not has_tags:
         page.keyboard.insert_text(description)
         return
-    # strategy: type everything with insert_text EXCEPT hashtags; hashtags get
-    # insert_text("#tag") followed by real keyboard.press("Space")
+    # strategy: insert_text everything EXCEPT hashtags; hashtags get real
+    # per-char typing + real keyboard.press("Space") commit
     buf = ""
     prev_was_tag = False
     for tok in tokens:
@@ -358,10 +360,13 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 page.keyboard.insert_text(buf)
                 buf = ""
                 time.sleep(0.15)
-            page.keyboard.insert_text(tok)
-            time.sleep(0.25)
+            try:
+                page.keyboard.type(tok, delay=60)  # real key events per char
+            except Exception:
+                page.keyboard.insert_text(tok)  # ponytail: fallback if type() rejects non-layout chars
+            time.sleep(0.3)
             page.keyboard.press("Space")  # real key event -> entity commit
-            time.sleep(0.25)
+            time.sleep(0.3)
             prev_was_tag = True
         elif tok.strip():
             buf += tok

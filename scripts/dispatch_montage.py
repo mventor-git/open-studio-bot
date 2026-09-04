@@ -1,13 +1,15 @@
 import sys, json
-sys.path.insert(0, r"C:\Users\Mventor\tg-montage")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agents.opencode_client import run_job
 
-SRC = r"C:\Users\Mventor\tg-montage\jobs\media\input.mp4"
-OUT = r"C:\Users\Mventor\tg-montage\jobs\media\out_tiktok.mp4"
-OM_REPO = r"C:\Users\Mventor\OpenMontage"
-FFMPEG = r"C:\Users\Mventor\tg-montage\tools\ffmpeg-9.0.1-essentials_build\bin"
+REPO = Path(__file__).resolve().parents[1]
+SRC = REPO / "jobs" / "media" / "input.mp4"
+OUT = REPO / "jobs" / "media" / "out_tiktok.mp4"
+OM_REPO = Path.home() / "OpenStudioBot"  # ponytail: sibling checkout, override here if elsewhere
+FFMPEG = REPO / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin"
 
-prompt = f"""You are the OpenMontage production agent working in {OM_REPO}.
+prompt = f"""You are the Open Studio Bot production agent working in {OM_REPO}.
 TASK: Cut a 10-second montage from {SRC} (a ~19s clip) -> {OUT}.
 Use the bundled ffmpeg at {FFMPEG} (ffmpeg.exe / ffprobe.exe there).
 Steps:

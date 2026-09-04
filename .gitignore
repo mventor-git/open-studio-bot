@@ -1,11 +1,55 @@
-.venv/
+*.venv/
 __pycache__/
 *.pyc
 .env
-jobs/*.json
-jobs/media/
-tests/media/
-screenshots/
-tools/
-logs/*.csv
-!logs/.gitkeep
+.env.example
+jobs/  # runtime state files
+logs/  # CSV logs, callback logs
+logs/.gitkeep
+screenshots/  # upload screenshots
+tools/  # bundled ffmpeg
+tests/media/  # downloaded test media
+.pytest_cache/
+.*_
+*.swp
+*.swo
+# Python coverage files
+coverage.xml
+htmlcov/
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+# OS generated files
+.DS_Store
+Thumbs.db
+*.lnk
+# Temporary files
+*.tmp
+*.temp
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+# Node/npm
+package-lock.json
+node_modules/
+# other runtime artifacts
+*.log
+*.pid
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
+*.orig
+*.rej
+# user-specific files
+*.key
+*.pem
+*.p12
+*.crt
+# system temporary files
+*~

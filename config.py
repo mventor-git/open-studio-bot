@@ -1,4 +1,4 @@
-"""tg-montage configuration.
+"""Open Studio Bot configuration.
 
 All settings come from environment / .env (see .env.example).
 Never hardcode tokens or profile paths here.
@@ -61,11 +61,12 @@ class Config:
     )
 
     # Waterfox (Firefox fork) profile dir for cookie extraction
+    # default: %APPDATA%\Waterfox\Profiles (auto-discovers profile subdirs)
     waterfox_profile: Path = field(
         default_factory=lambda: Path(
             os.environ.get(
                 "WATERFOX_PROFILE",
-                r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles",
+                os.path.join(os.environ.get("APPDATA", ""), "Waterfox", "Profiles"),
             )
         )
     )

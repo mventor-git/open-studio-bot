@@ -76,7 +76,7 @@ def _read_readme_formatted() -> str | None:
             formatted = formatted[:3500].rsplit("\n", 1)[0] + "\n\n…(truncated, see file)"
         # prepend title if not already bold title
         if not formatted.lstrip().startswith("<b>"):
-            formatted = f"📚 <b>Docs — tg-montage</b>\n\n{formatted}"
+            formatted = f"📚 <b>Docs — Open Studio Bot</b>\n\n{formatted}"
         return formatted
     except Exception:
         return None
@@ -258,7 +258,7 @@ HANDLE_CURRENT = "Current handles — TikTok: {tiktok}  Watermark: {watermark}"
 
 # --- control center (Telegram buttons) ---
 CONTROL_CENTER_TEXT = (
-    "🎛️ <b>Control Center</b> — tg-montage\n"
+    "🎛️ <b>Control Center</b> — Open Studio Bot\n"
     "Pick an action:\n"
     "• 📚 Docs — app readme (Telegram → download → montage → TikTok), templates, pipeline\n"
     "• ❓ Help — step-by-step wizard + button guide\n"
@@ -270,7 +270,7 @@ CONTROL_CENTER_TEXT = (
 )
 
 HELP_TEXT = (
-    "❓ <b>Help — How to use tg-montage</b>\n\n"
+    "❓ <b>Help — How to use Open Studio Bot</b>\n\n"
     "<b>Step-by-step wizard (v2):</b>\n"
     "1️⃣ <b>Send URL</b> — via /url or paste link (YouTube / TikTok / IG / FB).\n"
     "   Optional cut in same message: <code>Cut 0.25 to 1.00</code> or <code>0:25 to 1:00</code> or <code>26:19 to 27:10</code>.\n"
@@ -300,7 +300,7 @@ HELP_TEXT = (
 )
 
 DOCS_TEXT = (
-    "📚 <b>Docs — tg-montage</b>\n\n"
+    "📚 <b>Docs — Open Studio Bot</b>\n\n"
     "<b>What it does</b>\n"
     "Telegram URL (YouTube / TikTok / Instagram / Facebook) → verify (yt-dlp + Waterfox cookies) → download (--download-sections) → montage (vertical_fast 1080x1920, 00 Raw or 01 Card) → preview [Confirm / Rerun / Revert] → upload to TikTok (Playwright نشر → النشر الآن, scroll fix) → Done. State: new → verifying → downloading → montaging → awaiting_approval → uploading → done.\n\n"
     "<b>How to use</b>\n"

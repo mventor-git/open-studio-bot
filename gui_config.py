@@ -1,4 +1,4 @@
-"""TG-MONTAGE Retro Desktop Config GUI — Game Boy 8-bit edition.
+"""Open Studio Bot Retro Desktop Config GUI — Game Boy 8-bit edition.
 
 4-color palette, chunky pixel font, beep buttons.
 Run: .venv\Scripts\python.exe gui_config.py
@@ -25,7 +25,8 @@ except ImportError:
 
 try:
     import winsound
-    def beep(): winsound.Beep(800, 80)
+    # soft pop: lower freq + shorter duration - keyboard feel, not alarm
+    def beep(): winsound.Beep(520, 35)  # was 800Hz 80ms; now soft 520Hz 35ms
 except ImportError:
     def beep(): pass
 
@@ -109,7 +110,7 @@ def count_tiktok_cookies(profile):
 class Retro8BitGUI:
     def __init__(self, root):
         self.root = root
-        root.title(" TG-MONTAGE  [ GAME BOY EDITION ] ")
+        root.title(" OPEN STUDIO BOT [ GAME BOY EDITION ] ")
         root.geometry("680x740")
         root.configure(bg=C0)
         # outer bezel
@@ -120,12 +121,34 @@ class Retro8BitGUI:
 
         env = load_env()
 
-        # Title bar - Game Boy style
-        title = tk.Frame(inner, bg=C0, height=32)
-        title.pack(fill="x", padx=3, pady=3)
-        tk.Label(title, text=" ▓ TG-MONTAGE CONFIG ▓ ", bg=C0, fg=C3, font=TITLE_FONT).pack(side="left", padx=8, pady=6)
-        tk.Label(title, text="8-BIT", bg=C0, fg=C2, font=("Courier", 7, "bold")).pack(side="right", padx=10)
-        # scanline
+        # Remove the native title bar
+        self.root.overrideredirect(True)
+
+        # Custom title bar
+        title_bar = tk.Frame(inner, bg=C0, height=32)
+        title_bar.pack(fill="x", padx=3, pady=3)
+
+        # Title label
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).pack(side="left", padx=8, pady=6)
+
+        # Minimize button
+        minimize_btn = tk.Button(title_bar, text="–", bg=C0, fg=C3, font=("Courier", 10, "bold"),
+                                 relief="raised", bd=3, width=2, command=self.minimize_window)
+        minimize_btn.pack(side="right", padx=2, pady=2)
+
+        # Close button
+        close_btn = tk.Button(title_bar, text="✖", bg=C0, fg=C3, font=("Courier", 10, "bold"),
+                              relief="raised", bd=3, width=2, command=self.root.destroy)
+        close_btn.pack(side="right", padx=2, pady=2)
+
+        # Make the title bar draggable
+        title_bar.bind("<Button-1>", self.start_move)
+        title_bar.bind("<B1-Motion>", self.on_move)
+        # Also bind the label for easier dragging
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).bind("<Button-1>", self.start_move)
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).bind("<B1-Motion>", self.on_move)
+
+        # Scanline
         tk.Frame(inner, bg=C1, height=2).pack(fill="x", padx=3)
         tk.Label(inner, text="— INSERT CARTRIDGE —  TELEGRAM BOT API  ( @BotFather )  —", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
 
@@ -146,7 +169,7 @@ class Retro8BitGUI:
         tk.Label(wf_row, text="PROFILE:", bg=C_BG, fg=C_TEXT, font=PIXEL_FONT, width=14, anchor="w").pack(side="left")
         self.wf_entry = tk.Entry(wf_row, bg=C_ENTRY_BG, fg=C_TEXT, relief="sunken", bd=3, font=("Courier", 8), insertbackground=C0)
         self.wf_entry.pack(side="left", fill="x", expand=True, padx=6)
-        self.wf_entry.insert(0, env.get("WATERFOX_PROFILE", r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles"))
+        self.wf_entry.insert(0, env.get("WATERFOX_PROFILE", os.path.join(os.environ.get("APPDATA", ""), "Waterfox", "Profiles")))
         self._pix_btn(wf_row, "VERIFY!", self.verify_waterfox).pack(side="left", padx=4)
         self.wf_status = tk.Label(body, text="> Press VERIFY! to check Waterfox + cookies", bg=C_BG, fg=C1, font=PIXEL_SMALL, anchor="w")
         self.wf_status.pack(fill="x", padx=4, pady=2)
@@ -178,7 +201,27 @@ class Retro8BitGUI:
         self.cli_text.insert("1.0", "> SYSTEM READY. Press CHECK DEPS to scan clean PC...\n> Use SAVE to write .env\n")
         self.cli_text.config(state="disabled")
 
-        tk.Label(inner, text=" © 2026 TG-MONTAGE  —  PRESS START  —  8-BIT EDITION ", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
+        tk.Label(inner, text=" © 2026 OPEN STUDIO BOT  —  PRESS START  —  8-BIT EDITION ", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
+
+    def minimize_window(self):
+        """Minimize: hide title bar temporarily so taskbar icon works."""
+        self.root.overrideredirect(False)
+        self.root.iconify()
+        self.root.bind("<Map>", lambda e: self.root.after_idle(self._restore_titlebar))
+
+    def _restore_titlebar(self):
+        self.root.after(50, lambda: self.root.overrideredirect(True))  # delay + idle ensures restore works
+
+    def start_move(self, event):
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+
+    def on_move(self, event):
+        dx = event.x_root - self._drag_start_x
+        dy = event.y_root - self._drag_start_y
+        x = max(0, self.root.winfo_x() + dx)
+        y = max(0, self.root.winfo_y() + dy)
+        self.root.geometry(f"+{x}+{y}")
 
     def _pix_section(self, parent, title):
         f = tk.Frame(parent, bg=C1, height=2)
