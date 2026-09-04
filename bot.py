@@ -2094,6 +2094,26 @@ def _build_bot():
         # --- wizard state machine routing ---
         wiz = _wizard_get(chat_id)
 
+        # ponytail: new-URL check at top — any wizard step, if incoming text contains a NEW url different from wiz["url"], cancel old job and start new flow (fixes AWAITING_APPROVAL loop)
+        incoming_url = _extract_url(text)
+        if wiz and incoming_url and incoming_url != wiz.get("url"):
+            old_jid = wiz.get("job_id")
+            if old_jid:
+                try:
+                    oj = store.load(old_jid)
+                    if oj.get("state") not in (DONE, CANCELLED, FAILED):
+                        store.set_state(oj, CANCELLED)
+                except Exception:
+                    pass
+                try:
+                    registry.clear(old_jid)
+                except Exception:
+                    pass
+            _wizard_clear(chat_id)
+            status_msg = await update.message.reply_text(msgs.VERIFYING)
+            await _wizard_handle_url_verify(chat_id, context.bot, incoming_url, text, status_msg)
+            return
+
         # if wizard exists and in awaiting steps, route accordingly
         if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_TEMPLATE:
             templ = parse_template_wizard(text)

@@ -23,21 +23,84 @@ FONT_AR = Path(r"C:\Windows\Fonts\majallab.ttf")      # Sakkal Majalla Bold — 
 FONT_AR_BODY = Path(r"C:\Windows\Fonts\majalla.ttf")       # Sakkal Majalla — elegant Naskh
 FONT_HANDLE = Path(r"C:\Windows\Fonts\segoeui.ttf")        # clean Latin for @handle
 FONT_EMOJI = Path(r"C:\Windows\Fonts\seguiemj.ttf")        # Segoe UI Emoji — color emoji fallback (Majalla has no emoji glyphs → ??)
+FONT_JP = Path(r"C:\Windows\Fonts\msgothic.ttc")           # MS Gothic — Japanese Hiragana/Katakana/Kanji (U+3040-U+30FF, U+4E00-U+9FFF)
+FONT_JP_ALT1 = Path(r"C:\Windows\Fonts\YuGothR.ttc")       # Yu Gothic Regular — fallback Japanese
+FONT_JP_ALT2 = Path(r"C:\Windows\Fonts\YuGothM.ttc")       # Yu Gothic Medium
+FONT_JP_ALT3 = Path(r"C:\Windows\Fonts\YuGothB.ttc")       # Yu Gothic Bold
+FONT_FALLBACK = Path(r"C:\Windows\Fonts\segoeui.ttf")      # Segoe UI — universal Latin/Japanese partial, better than Majalla tofu
+
+
+def _contains_japanese(text: str) -> bool:
+    """Check for Hiragana/Katakana/Kanji ranges U+3040-U+30FF, U+4E00-U+9FFF, U+3400-U+4DBF, halfwidth U+FF66-U+FF9F."""
+    if not text:
+        return False
+    for ch in text:
+        cp = ord(ch)
+        if 0x3040 <= cp <= 0x30FF:
+            return True
+        if 0x4E00 <= cp <= 0x9FFF:
+            return True
+        if 0x3400 <= cp <= 0x4DBF:
+            return True
+        if 0xFF66 <= cp <= 0xFF9F:
+            return True
+    return False
+
+
+def _contains_arabic(text: str) -> bool:
+    if not text:
+        return False
+    for ch in text:
+        cp = ord(ch)
+        if 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F or 0x08A0 <= cp <= 0x08FF or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF:
+            return True
+    return False
+
+
+def exists_path(p: Path) -> bool:
+    try:
+        return p.exists()
+    except Exception:
+        return False
+
+
+def _font(path: Path, size: int) -> ImageFont.FreeTypeFont:
+    p = path if path.exists() else FONT_AR
+    try:
+        # .ttc needs index param handled by Pillow auto (first face); pass index=0 if needed
+        return ImageFont.truetype(str(p), size)
+    except Exception:
+        # fallback to Segoe UI if TTC load fails
+        try:
+            return ImageFont.truetype(str(FONT_FALLBACK), size)
+        except Exception:
+            return ImageFont.truetype(str(FONT_AR), size)
+
+
+def _font_for_text(text: str, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """Dynamically choose font based on script to avoid tofu: Japanese -> MS Gothic/Yu Gothic, Arabic -> Majalla, else Segoe UI."""
+    if _contains_japanese(text):
+        for p in (FONT_JP, FONT_JP_ALT1, FONT_JP_ALT2, FONT_JP_ALT3, FONT_FALLBACK):
+            if p.exists():
+                return _font(p, size)
+    if _contains_arabic(text):
+        return _font(FONT_AR if bold else FONT_AR_BODY, size)
+    # Latin/English/others -> Segoe UI has better Unicode coverage than Majalla
+    if FONT_FALLBACK.exists():
+        return _font(FONT_FALLBACK, size)
+    return _font(FONT_AR, size)
 
 
 def shape_ar(text: str) -> str:
-    """Reshape Arabic glyphs + fix RTL direction for Pillow rendering."""
+    """Reshape Arabic glyphs + fix RTL direction for Pillow rendering. Only reshapes if Arabic present to avoid corrupting Japanese/emoji."""
     if not text:
+        return text
+    if not _contains_arabic(text):
         return text
     try:
         return get_display(arabic_reshaper.reshape(text))
     except Exception:
         return text
-
-
-def _font(path: Path, size: int) -> ImageFont.FreeTypeFont:
-    p = path if path.exists() else FONT_AR
-    return ImageFont.truetype(str(p), size)
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
@@ -217,15 +280,30 @@ def card(img: Image.Image, title: str, subtitle: str = "",
          max_width_frac: float = 0.94, panel_pad: int = 36) -> Image.Image:
     """Rounded card — compact (Template 01: 9:16 TikTok for 16:9 source).
     Right-aligned Arabic title + subtitle, accent bar on the RTL edge.
-    Emoji-aware: Majalla for Arabic, seguiemj for emoji (Majalla has no emoji glyphs).
+    Emoji-aware: Majalla for Arabic, seguiemj for emoji, MS Gothic/Yu Gothic for Japanese (Hiragana/Katakana/Kanji).
+    Dynamically picks font per script to avoid tofu/replacement �.
     """
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
     max_w = int(w * max_width_frac)
 
-    # larger Arabic fonts + emoji fallback
-    t_font = _font(FONT_AR, max(32, int(h * 0.052)))
-    s_font = _font(FONT_AR_BODY, max(24, int(h * 0.040)))
+    # dynamic fonts per script: Japanese -> MS Gothic/Yu Gothic, Arabic -> Majalla, else Segoe UI
+    # ponytail: universal fallback prevents tofu � for Japanese/emoji outside Majalla cmap
+    title_for_font = title or ""
+    subtitle_for_font = subtitle or ""
+    # choose font that can render the script; if title contains Japanese use JP font, else use AR/Fallback
+    if _contains_japanese(title_for_font):
+        t_font = _font_for_text(title_for_font, max(32, int(h * 0.052)), bold=True)
+    elif _contains_arabic(title_for_font):
+        t_font = _font(FONT_AR, max(32, int(h * 0.052)))
+    else:
+        t_font = _font_for_text(title_for_font, max(32, int(h * 0.052)), bold=True)
+    if _contains_japanese(subtitle_for_font):
+        s_font = _font_for_text(subtitle_for_font, max(24, int(h * 0.040)), bold=False)
+    elif _contains_arabic(subtitle_for_font):
+        s_font = _font(FONT_AR_BODY, max(24, int(h * 0.040)))
+    else:
+        s_font = _font_for_text(subtitle_for_font or "a", max(24, int(h * 0.040)), bold=False)
     t_font_emoji = _font(FONT_EMOJI, max(32, int(h * 0.052)))
     s_font_emoji = _font(FONT_EMOJI, max(24, int(h * 0.040)))
     title_lines = _wrap(draw, shape_ar(title), t_font, max_w - panel_pad * 2 - 12)
@@ -268,10 +346,10 @@ def card(img: Image.Image, title: str, subtitle: str = "",
 
 def pill(img: Image.Image, text: str, accent: tuple = (234, 179, 8, 255),
          panel: tuple = (0, 0, 0, 190)) -> Image.Image:
-    """Single rounded pill, one line, RTL text."""
+    """Single rounded pill, one line, RTL text — now script-aware (Japanese/Arabic/Latin)."""
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
-    font = _font(FONT_AR, max(24, int(h * 0.04)))
+    font = _font_for_text(text, max(24, int(h * 0.04)))
     text = shape_ar(text)
     tw = draw.textlength(text, font=font)
     pad_x, pad_y = 26, 14
@@ -288,10 +366,10 @@ def pill(img: Image.Image, text: str, accent: tuple = (234, 179, 8, 255),
 
 def banner(img: Image.Image, text: str, accent: tuple = (234, 179, 8, 255),
            panel: tuple = (0, 0, 0, 210)) -> Image.Image:
-    """Full-width centered bar."""
+    """Full-width centered bar — script-aware."""
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
-    font = _font(FONT_AR, max(26, int(h * 0.045)))
+    font = _font_for_text(text, max(26, int(h * 0.045)))
     text = shape_ar(text)
     bar_h = int(font.size * 1.7)
     y0 = int(h - bar_h - h * 0.03)
