@@ -1,23 +1,30 @@
-"""tg-montage bot entry point — T6 approval loop.
+"""tg-montage bot entry point — Telegram wizard v2.
 
 Run modes:
   python bot.py                 # long polling (requires BOT_TOKEN)
   python bot.py --check-config  # validate config and exit (T1 acceptance)
   python bot.py --dry-run       # handler parsing + approval state-machine self-check, no Telegram needed
 
-Flow (corrected — approval loop):
-  user sends URL + optional cut + Template 01/00 + description
-   -> verify -> download (with --download-sections if cut) -> vertical_fast (9:16, Majalla card for 01, clean for 00)
-   -> SEND preview video with [✅ Accept] [🔁 Rerun] [❌ Reject] -> AWAITING_APPROVAL
-   -> on Accept: upload TikTok (Joyride Skip + confirm modal النشر الآن) -> Done
-   -> on Reject: CANCELLED, delete temp
-   -> on Rerun: prompt "Send new Title / Subtitle or Description for rerun" -> re-montage -> new preview
+Wizard v2 Flow:
+  1. User sends /url or pastes URL (with or without time cut). Bot verifies: good video = URL contains video AND downloadable via yt-dlp probe (verify_url). If not downloadable, reply "Invalid or not downloadable" and ask for new URL.
+  2. Bot sends frame photo + default description: after verify, download thumbnail via yt-dlp --get-thumbnail or extract frame at 1s via ffmpeg, send as photo with caption containing default title/channel/duration from probe. Also reply with "Select template no. — 00 (raw, no card) or 01 (9:16 + card + @mventor) — type 00 or 01 or nothing (defaults to 00)"
+  3. User types template: 00 or 01 or empty -> default 00. Bot stores template.
+  4. Bot asks: "Select cut 00:00 to 00:00 (video is 00:00-19:05)" - show duration. If user already sent cut (e.g., "Cut 0.25 to 1.00" parsed as 25s-60s), skip this step. If no cut and full video: Bot randomly picks ONE 30s section to cut (single slice, not montage). Logic: random start = randint(0, duration-30), end = start+30. If video <30s, use full video.
+  5. Bot asks: "Type Description (or skip — I'll take it from the video URL itself)" - if user skips (sends /skip or empty), use yt-dlp title/description as caption.
+  6. Bot asks: "Type Hashtags (unlimited, with or without # — e.g., تاريخ حضارة or #تاريخ #حضارة) - I'll normalize to #hashtags"
+  7. Bot shows preview: montage via Template 00 or 01 (00 = clean 9:16 vertical, no card; 01 = with Majalla card). Send preview video with [✅ Confirm to Upload] [🔁 Rerun] [❌ Revert]
+  8. Confirm -> Upload to TikTok via publish_template01 logic (Waterfox cookies, Joyride skip, scroll fix, نشر → النشر الآن)
+  9. Revert -> Bot sends "Use last URL or paste a new URL" with [Use Last URL] [New URL]
+
+Per-chat wizard state stored in memory dict WIZARD: {step, url, template, cut_start, cut_end, description, hashtags, video_path, preview_path, duration, title, channel, job_id, probe}
 
 Only ALLOWED_CHAT_ID (7830528991) may trigger jobs. Handler is async, long jobs via asyncio.create_task.
 """
+
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import sys
 from pathlib import Path
@@ -69,7 +76,7 @@ def _fmt_secs(sec: int) -> str:
 
 
 def parse_time_cut(text: str) -> tuple[int | None, int | None, str | None]:
-    """Return (start_sec, end_sec, raw_match) or (None,None,None)."""
+    """Return (start_sec, end_sec, raw_match) or (None,None,None). Handles 0.25 to 1.00 as mm.ss"""
     if not text:
         return None, None, None
     # 1) colon pair: 26:19 to 27:10, 0:25-1:00, 26:19-27:10
@@ -78,7 +85,7 @@ def parse_time_cut(text: str) -> tuple[int | None, int | None, str | None]:
         s = _colon_to_sec(m.group(1), m.group(2))
         e = _colon_to_sec(m.group(3), m.group(4))
         return s, e, m.group(0)
-    # 2) dot pair: 0.25 to 1.00, 0.25-1.00
+    # 2) dot pair: 0.25 to 1.00, 0.25-1.00  (mm.ss)
     m = re.search(r"(\d+)\.(\d{1,2})\s*(?:to|\-|\u2013|–)\s*(\d+)\.(\d{1,2})", text, re.I)
     if m:
         s = _dot_to_sec(m.group(1), m.group(2))
@@ -95,46 +102,75 @@ def parse_time_cut(text: str) -> tuple[int | None, int | None, str | None]:
 
 
 def parse_template(text: str) -> str:
+    """Legacy: defaults to 01. Used for single-shot parse_message."""
     m = re.search(r"template\s*0?\s*(\d{1,2})", text or "", re.I)
     if m:
         num = m.group(1).lstrip("0") or "0"
-        # spec expects 01 for template 1, 00 for template 00 (no card)
         return num.zfill(2)
     return "01"
+
+
+def parse_template_wizard(text: str) -> str:
+    """Wizard v2: 00 or 01 or empty -> default 00. Handles '00', '01', 'Template 01', '1' etc."""
+    if text is None or str(text).strip() == "" or str(text).strip().lower() in ("/skip", "skip", "nothing"):
+        return "00"
+    t = str(text).strip()
+    # pure 00 / 01 / 0 / 1
+    if re.fullmatch(r"0?0", t):
+        return "00"
+    if re.fullmatch(r"0?1", t):
+        return "01"
+    m = re.search(r"template\s*0?\s*(\d{1,2})", t, re.I)
+    if m:
+        num = m.group(1).lstrip("0") or "0"
+        # only 0 or 1 allowed, map everything else to 00? spec says 00 or 01
+        if num == "1":
+            return "01"
+        return "00"
+    # loose: find standalone 00 or 01
+    if re.search(r"\b00\b", t):
+        return "00"
+    if re.search(r"\b01\b", t):
+        return "01"
+    # if single digit 0/1 bare
+    if t.strip() == "0":
+        return "00"
+    if t.strip() == "1":
+        return "01"
+    return "00"
 
 
 def _has_no_watermark(text: str) -> bool:
     return bool(re.search(r"no[\s\-_]*watermark|--no-watermark|without watermark", text or "", re.I))
 
 
-def _extract_raw_caption(text: str, url: str | None) -> str:
-    """Caption for Template 00: raw Description: value or trailing text, else empty (no defaults)."""
-    raw_text = text or ""
-    m = re.search(r"description\s+is\s*:\s*(.*)", raw_text, re.I | re.S)
-    if m:
-        raw = m.group(1).strip()
-        raw = re.sub(r"^\s*template\s*0?\s*\d+\s*[-–—]*\s*", "", raw, flags=re.I)
-        cleaned = _strip_cuts(raw)
-        cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
-        cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
-        cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
-        cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned.strip()
-    if url and url in raw_text:
-        rest = raw_text.split(url, 1)[1]
-    else:
-        rest = raw_text
-    cleaned = _strip_cuts(rest)
-    cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"^\s*[-–—,;:\s]+", "", cleaned)
-    cleaned = re.sub(r"\s*[-–—,;:\s]+$", "", cleaned)
-    cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
-    cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    cleaned = re.sub(r"^(-\s*)+", "", cleaned).strip()
-    return cleaned.strip()
+def parse_hashtags(text: str) -> list[str]:
+    """Normalize hashtags: split by space/comma, strip #, add # prefix, allow unlimited, Arabic support."""
+    if not text or not str(text).strip():
+        return []
+    # split by whitespace or comma
+    raw_tokens = re.split(r"[\s,]+", str(text).strip())
+    out: list[str] = []
+    for tok in raw_tokens:
+        if not tok:
+            continue
+        # strip surrounding punctuation but keep Arabic letters and word chars
+        # first lstrip '#'
+        t = tok.lstrip("#").lstrip("＃")
+        # strip trailing punctuation like .!?,;:
+        t = t.strip(".,)]}>\"'!?;:،؛")
+        if not t:
+            continue
+        # also strip leading # again if double
+        t = t.lstrip("#")
+        if not t:
+            continue
+        out.append(f"#{t}")
+    return out
+
+
+def normalize_hashtags(text: str) -> list[str]:
+    return parse_hashtags(text)
 
 
 def _strip_cuts(text: str) -> str:
@@ -152,14 +188,52 @@ def _strip_cuts(text: str) -> str:
     return out
 
 
+def _extract_desc_raw(text: str, url: str | None) -> str:
+    """Extract raw description after 'Description:' or 'Description is:' or trailing text."""
+    raw = text or ""
+    m = re.search(r"description\s*(?:is\s*)?:\s*(.*)", raw, re.I | re.S)
+    if m:
+        seg = m.group(1).strip()
+        # remove leading template label if user wrote "Template 01 - my desc"
+        seg = re.sub(r"^\s*template\s*0?\s*\d+\s*[-–—]*\s*", "", seg, flags=re.I)
+        cleaned = _strip_cuts(seg)
+        cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
+        cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
+        cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        # hashtags remain in cleaned; caller may split hashtags out
+        return cleaned.strip()
+    if url and url in raw:
+        rest = raw.split(url, 1)[1]
+    else:
+        rest = raw
+    cleaned = _strip_cuts(rest)
+    cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^\s*[-–—,;:\s]+", "", cleaned)
+    cleaned = re.sub(r"\s*[-–—,;:\s]+$", "", cleaned)
+    cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
+    cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"^(-\s*)+", "", cleaned).strip()
+    # also strip leading Description: label if fallback contained it without is
+    cleaned = re.sub(r"^\s*description\s*:?\s*", "", cleaned, flags=re.I)
+    return cleaned.strip()
+
+
+def _extract_raw_caption(text: str, url: str | None) -> str:
+    """Caption for Template 00: raw Description: value or trailing text, else empty (no defaults)."""
+    return _extract_desc_raw(text, url)
+
+
 def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
-    """Return (title, subtitle, caption). Falls back to defaults if no user caption."""
+    """Return (title, subtitle, caption). Falls back to defaults if no user caption. Supports Description: and Description is:"""
     raw_text = text or ""
-    # case A: "description is : ..."
-    m = re.search(r"description\s+is\s*:\s*(.*)", raw_text, re.I | re.S)
+    # case A: description is : or description:  (flexible)
+    m = re.search(r"description\s*(?:is\s*)?:\s*(.*)", raw_text, re.I | re.S)
     if m:
         raw = m.group(1).strip()
-        # remove leading Template 01 prefix
         raw = re.sub(r"^\s*template\s*0?\s*\d+\s*[-–—]*\s*", "", raw, flags=re.I)
         cleaned = _strip_cuts(raw)
         cleaned = re.sub(r"template\s*0?\s*\d+", "", cleaned, flags=re.I)
@@ -187,8 +261,9 @@ def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
     cleaned = cleaned.strip(" \t\n\r-–—,;:\"'").strip()
     cleaned = re.sub(r"^[\s\-–—]+", "", cleaned).strip()
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    # remove stray leading dash combos like " - - "
     cleaned = re.sub(r"^(-\s*)+", "", cleaned).strip()
+    # strip leading description label if present
+    cleaned = re.sub(r"^\s*description\s*:?\s*", "", cleaned, flags=re.I)
     if cleaned:
         if " - " in cleaned or " – " in cleaned or " — " in cleaned:
             parts = re.split(r"\s*[-–—]\s*", cleaned, maxsplit=1)
@@ -200,10 +275,55 @@ def parse_description(text: str, url: str | None) -> tuple[str, str, str]:
     return DEFAULT_TITLE, DEFAULT_SUBTITLE, f"{DEFAULT_TITLE} - {DEFAULT_SUBTITLE}"
 
 
+def parse_description_text_only(text: str, url: str | None = None) -> str:
+    """Extract description string after Description: (wizard step helper). Returns '' if empty."""
+    if not text:
+        return ""
+    # if text is /skip or empty -> return ''
+    if str(text).strip().lower() in ("/skip", "skip", ""):
+        return ""
+    # Use _extract_desc_raw but strip hashtags? Keep hashtags inside? For wizard we keep description separate from hashtags.
+    # So first extract raw then try to separate trailing hashtags tokens that start with # or that look like hashtags.
+    raw = _extract_desc_raw(text, url)
+    # If raw contains hashtags as trailing #words, keep them? For wizard step 5 we treat entire input as description; hashtags step is separate, so we keep raw as-is.
+    # Remove hashtags that are at end? No — keep raw. Caller will handle hashtags separately.
+    return raw.strip()
+
+
+def extract_hashtags_from_text(text: str) -> list[str]:
+    """Helper to pull hashtags tokens from arbitrary text: find #tags or standalone Arabic words that look like hashtags?
+    For combined message, we treat tokens starting with # as hashtags. For hashtags-step, we normalize all tokens.
+    """
+    if not text:
+        return []
+    # find hashtags via regex: words starting with # (including Arabic)
+    # Arabic range: \u0600-\u06FF
+    # Use regex to find #<word>
+    found = re.findall(r"#([\w\u0600-\u06FF]+)", text)
+    if found:
+        return [f"#{w}" for w in found]
+    # fallback: if no # but text is like "تاريخ حضارة", caller should treat whole text as hashtags — use parse_hashtags instead.
+    return []
+
+
+def random_30s_slice(duration: float | int | None) -> tuple[int | None, int | None]:
+    """Wizard logic: random start = randint(0, duration-30), end = start+30. If video <30s, use full video (None,None)."""
+    if duration is None:
+        return None, None
+    try:
+        d = int(float(duration))
+    except Exception:
+        return None, None
+    if d <= 30:
+        return None, None
+    start = random.randint(0, d - 30)
+    return start, start + 30
+
+
 def parse_message(text: str) -> dict:
     """Parse Telegram message text into job params.
 
-    Returns dict with url, start, end, template, title, subtitle, caption, raw_cut, handle.
+    Returns dict with url, start, end, template, title, subtitle, caption, raw_cut, handle, description, hashtags.
     Template 00: no burned card — title/subtitle forced empty, caption is raw Description: if any else "".
     Watermark: default @mventor unless text contains no watermark / --no-watermark.
     """
@@ -211,19 +331,23 @@ def parse_message(text: str) -> dict:
     start, end, raw_cut = parse_time_cut(text)
     template = parse_template(text)
     handle = "" if _has_no_watermark(text) else "@mventor"
+    # hashtags extraction: find #tags; if none but user might have typed bare hashtags, fallback handled by caller
+    hashtags = extract_hashtags_from_text(text)
+    # if no #tags found but the text after Description: contains bare words that caller considers hashtags, we leave empty here and wizard step will normalize separately
     if template == "00":
         caption = _extract_raw_caption(text, url)
         title = ""
         subtitle = ""
+        description = caption
     else:
         title, subtitle, caption = parse_description(text, url)
-        # strip watermark phrase from caption/title if user typed it (so it doesn't burn into card)
+        description = caption
         if _has_no_watermark(text):
-            # clean caption of watermark remnants
             caption = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", caption, flags=re.I).strip()
             caption = re.sub(r"\s+", " ", caption).strip(" -–—,;:")
             title = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", title, flags=re.I).strip()
             subtitle = re.sub(r"no[\s\-_]*watermark|--no-watermark|without watermark", "", subtitle, flags=re.I).strip()
+            description = caption
     return {
         "url": url,
         "start": start,
@@ -233,14 +357,65 @@ def parse_message(text: str) -> dict:
         "title": title,
         "subtitle": subtitle,
         "caption": caption,
+        "description": description,
+        "hashtags": hashtags,
         "handle": handle,
     }
+
+
+# --- wizard state machine (per-chat memory) --------------------------
+
+# WIZARD holds per-chat wizard state; LAST_URL remembers last successful URL per chat for Revert
+WIZARD: dict[int, dict] = {}
+LAST_URL: dict[int, str] = {}
+
+WIZARD_STEP_IDLE = "idle"
+WIZARD_STEP_AWAITING_URL = "awaiting_url"
+WIZARD_STEP_AWAITING_TEMPLATE = "awaiting_template"
+WIZARD_STEP_AWAITING_CUT = "awaiting_cut"
+WIZARD_STEP_AWAITING_DESCRIPTION = "awaiting_description"
+WIZARD_STEP_AWAITING_HASHTAGS = "awaiting_hashtags"
+WIZARD_STEP_AWAITING_APPROVAL = "awaiting_approval"
+
+
+def _wizard_get(chat_id: int) -> dict | None:
+    return WIZARD.get(chat_id)
+
+
+def _wizard_set(chat_id: int, data: dict) -> None:
+    WIZARD[chat_id] = data
+
+
+def _wizard_clear(chat_id: int) -> None:
+    WIZARD.pop(chat_id, None)
+
+
+def _wizard_init(chat_id: int, url: str, cut_start: int | None = None, cut_end: int | None = None, duration: float | None = None, probe: dict | None = None, title: str | None = None, channel: str | None = None) -> dict:
+    st = {
+        "step": WIZARD_STEP_AWAITING_TEMPLATE,
+        "url": url,
+        "template": None,
+        "cut_start": cut_start,
+        "cut_end": cut_end,
+        "description": None,
+        "hashtags": [],
+        "video_path": None,
+        "preview_path": None,
+        "duration": duration,
+        "title": title,
+        "channel": channel,
+        "probe": probe,
+        "job_id": None,
+    }
+    _wizard_set(chat_id, st)
+    LAST_URL[chat_id] = url
+    return st
 
 
 # --- dry-run self-check ------------------------------------------------
 
 def dry_run_mode() -> int:
-    print("dry-run: parsing handler checks + approval loop state machine")
+    print("dry-run: parsing handler checks + approval loop state machine + wizard v2")
     cases = [
         (
             "https://www.youtube.com/watch?v=xZDk-vyZm3w - Cut 26:19 to 27:10 Template 01 - سعدني في الحضارة",
@@ -294,10 +469,88 @@ def dry_run_mode() -> int:
                     ok = False
                 else:
                     print(f"  check {k}={v!r} OK")
-        # download-sections format sanity
         if got["start"] is not None and got["end"] is not None:
             sect = f"*{_fmt_secs(got['start'])}-{_fmt_secs(got['end'])}"
             print(f"  download-sections {sect}")
+    # --- wizard v2 parsing tests ---
+    print("\n--- wizard v2 parsing checks ---")
+    try:
+        # spec example: https://www.youtube.com/watch?v=IvaxAtX4abc Template 01 - Cut 0.25 to 1.00 Description: my desc #تاريخ
+        txt = "https://www.youtube.com/watch?v=IvaxAtX4abc Template 01 - Cut 0.25 to 1.00 Description: my desc #تاريخ"
+        got = parse_message(txt)
+        assert got["url"] == "https://www.youtube.com/watch?v=IvaxAtX4abc", f"url mismatch {got['url']}"
+        assert got["start"] == 25, f"start 25 expected got {got['start']}"
+        assert got["end"] == 60, f"end 60 expected got {got['end']}"
+        assert got["template"] == "01", f"template 01 expected got {got['template']}"
+        # description should contain my desc
+        assert "my desc" in got["caption"] or "my desc" in got["description"], f"caption should contain my desc got {got['caption']!r}"
+        assert "#تاريخ" in got["hashtags"] or "#تاريخ" in got["caption"], f"hashtag #تاريخ expected got {got['hashtags']!r} caption {got['caption']!r}"
+        print(f"  wizard combined parse OK url={got['url']} start={got['start']} end={got['end']} template={got['template']} hashtags={got['hashtags']!r}")
+
+        # description extraction via helper
+        desc = _extract_desc_raw(txt, got["url"])
+        assert "my desc" in desc, f"_extract_desc_raw failed {desc!r}"
+        print(f"  description extraction OK {desc!r}")
+
+        # hashtags helpers: with and without #
+        for ht_in, ht_expect in [
+            ("تاريخ حضارة", ["#تاريخ", "#حضارة"]),
+            ("#تاريخ #حضارة", ["#تاريخ", "#حضارة"]),
+            ("تاريخ, حضارة", ["#تاريخ", "#حضارة"]),
+            ("#تاريخ,حضارة", ["#تاريخ", "#حضارة"]),
+            ("تاريخ", ["#تاريخ"]),
+            ("   #تاريخ   #حضارة  ", ["#تاريخ", "#حضارة"]),
+        ]:
+            got_ht = parse_hashtags(ht_in)
+            assert got_ht == ht_expect, f"parse_hashtags {ht_in!r} expected {ht_expect} got {got_ht}"
+            print(f"  hashtags {ht_in!r} -> {got_ht} OK")
+
+        # template wizard defaults
+        assert parse_template_wizard("") == "00", "empty should default 00"
+        assert parse_template_wizard("   ") == "00", "whitespace default 00"
+        assert parse_template_wizard("/skip") == "00"
+        assert parse_template_wizard("00") == "00"
+        assert parse_template_wizard("01") == "01"
+        assert parse_template_wizard("Template 00") == "00"
+        assert parse_template_wizard("Template 01") == "01"
+        assert parse_template_wizard("template 1") == "01"
+        print("  template wizard parsing OK")
+
+        # random 30s slice logic
+        duration = 300
+        for i in range(20):
+            s, e = random_30s_slice(duration)
+            assert s is not None and e is not None, "should have slice for 300s"
+            assert 0 <= s <= 270, f"random start {s} out of [0,270]"
+            assert e == s + 30, f"end should be start+30 got {e} start {s}"
+        print("  random 30s slice for 300s OK (20 iterations in [0,270])")
+        # short video <30s
+        s, e = random_30s_slice(19)
+        assert s is None and e is None, f"short video should be None,None got {s},{e}"
+        print("  random slice short video <30s -> full video OK")
+        s, e = random_30s_slice(30)
+        assert s is None and e is None, "30s exactly -> full"
+        print("  random slice 30s exact -> full OK")
+        # edge 31s
+        s, e = random_30s_slice(31)
+        assert s in (0, 1), f"31s should be 0 or 1 got {s}"
+        print(f"  random slice 31s -> {s}-{e} OK")
+
+        # time cut dot pattern extra checks
+        assert parse_time_cut("Cut 0.25 to 1.00")[0] == 25
+        assert parse_time_cut("Cut 0.25 to 1.00")[1] == 60
+        assert parse_time_cut("0.25 to 1.00")[0] == 25
+        assert parse_time_cut("26:19 to 27:10")[0] == 1579
+        print("  time cut dot/colon patterns OK")
+
+    except AssertionError as e:
+        print(f"  wizard parsing FAIL: {e}")
+        ok = False
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print(f"  wizard parsing FAIL: {e}")
+        ok = False
+
     # also verify download helper exists
     try:
         from core.downloader import _fmt_secs as _dfs
@@ -312,7 +565,8 @@ def dry_run_mode() -> int:
     try:
         import ui.messages as _m
         assert hasattr(_m, "start")
-        print("ui.messages OK")
+        assert hasattr(_m, "WIZARD_TEMPLATE_PROMPT")
+        print("ui.messages OK (wizard prompts present)")
     except Exception as e:
         print(f"ui.messages FAIL {e}")
         ok = False
@@ -323,13 +577,11 @@ def dry_run_mode() -> int:
         from core.jobs import ACTIVE_STATES, AWAITING_APPROVAL, CANCELLED, DONE, FAILED, JobStore
         assert AWAITING_APPROVAL in ACTIVE_STATES, "AWAITING_APPROVAL must be in ACTIVE_STATES"
         print(f"  state AWAITING_APPROVAL in ACTIVE_STATES OK ({AWAITING_APPROVAL})")
-        # verify allowed transitions include approval step
         expected_flow = ["new", "verifying", "downloading", "montaging", "awaiting_approval", "uploading", "done"]
         for s in expected_flow:
             assert s in (ACTIVE_STATES | {DONE, CANCELLED, FAILED}) or s in ACTIVE_STATES, f"state {s} missing"
         print(f"  flow {' -> '.join(expected_flow)} OK")
 
-        # JobStore state machine roundtrip through approval
         import tempfile
         tmp = tempfile.mkdtemp()
         store = JobStore(Path(tmp))
@@ -340,7 +592,6 @@ def dry_run_mode() -> int:
             store.set_state(j, st)
             assert store.load(job["id"])["state"] == st
             print(f"  transition -> {st} OK")
-        # simulate approve -> uploading -> done
         j = store.load(job["id"])
         store.set_state(j, "uploading")
         print("  approve callback -> uploading OK")
@@ -348,7 +599,6 @@ def dry_run_mode() -> int:
         store.set_state(j, DONE)
         assert store.load(job["id"])["state"] == DONE
         print("  uploading -> done OK")
-        # reject path
         job2 = store.create("https://youtu.be/test456", prompt="cap2", template="00")
         for st in ["verifying", "downloading", "montaging", "awaiting_approval"]:
             j = store.load(job2["id"])
@@ -357,7 +607,6 @@ def dry_run_mode() -> int:
         store.set_state(j, CANCELLED)
         assert store.load(job2["id"])["state"] == CANCELLED
         print("  reject -> cancelled OK")
-        # rerun stays in awaiting_approval (re-montage)
         job3 = store.create("https://youtu.be/test789", prompt="cap3", template="01")
         j = store.load(job3["id"])
         store.set_state(j, "awaiting_approval")
@@ -373,7 +622,7 @@ def dry_run_mode() -> int:
         print(f"  approval state machine FAIL: {e}")
         ok = False
 
-    # check bot wiring contains approval loop markers
+    # check bot wiring contains approval loop markers + wizard markers
     try:
         bot_text = Path(__file__).read_text(encoding="utf-8")
         checks = [
@@ -382,32 +631,37 @@ def dry_run_mode() -> int:
             ("approve:" in bot_text, "approve callback_data"),
             ("rerun:" in bot_text, "rerun callback_data"),
             ("reject:" in bot_text, "reject callback_data"),
+            ("confirm" in bot_text.lower(), "confirm/revert handling"),
+            ("revert" in bot_text.lower(), "revert handling"),
             ("awaiting_approval" in bot_text.lower(), "awaiting_approval flow"),
-            ("approval_keyboard" in bot_text or "preview_keyboard" in bot_text, "keyboards preview function"),
+            ("approval_keyboard" in bot_text or "preview_keyboard" in bot_text or "wizard_preview_keyboard" in bot_text, "keyboards preview function"),
             ("bot.send_video" in bot_text, "bot.send_video call"),
-            ("PREVIEW_CAPTION" in bot_text or "Approve to publish" in bot_text, "preview caption"),
+            ("PREVIEW_CAPTION" in bot_text or "Approve to publish" in bot_text or "Confirm to Upload" in bot_text, "preview caption"),
+            ("WIZARD" in bot_text, "wizard state dict"),
+            ("parse_hashtags" in bot_text, "hashtags helper"),
+            ("random_30s_slice" in bot_text or "randint(0, duration-30)" in bot_text, "random 30s helper"),
+            ("INVALID_URL" in bot_text or "Invalid or not downloadable" in bot_text, "invalid url handling"),
+            ("/url" in bot_text, "/url command"),
+            ("WIZARD_STEP_AWAITING_TEMPLATE" in bot_text, "wizard steps"),
         ]
         for passed, name in checks:
             print(f"  check {name}: {'OK' if passed else 'MISSING'}")
             if not passed:
                 ok = False
-        # ensure NO auto-upload without approval: the string " -> upload directly" flow must not be present as active code path before approval
-        # We check that upload_tiktok is NOT called before AWAITING_APPROVAL in _pipeline order
-        # simple heuristic: montaging -> preview should appear before upload in file order after montage
         idx_montaging = bot_text.find("MONTAGING")
         idx_preview = bot_text.find("AWAITING_APPROVAL")
         idx_upload = bot_text.find("UPLOADING", idx_preview if idx_preview != -1 else 0)
-        # we expect preview before uploading in file order for the montage->preview->upload sequence
         if idx_preview != -1 and idx_upload != -1 and idx_preview < idx_upload:
             print("  order montaging -> awaiting_approval -> uploading OK")
         else:
             print("  order check WARN: could not verify montage->preview->upload order")
-        # check keyboards.py preview function
         kb_text = (Path(__file__).parent / "ui" / "keyboards.py").read_text(encoding="utf-8")
         kb_checks = [
-            ("approval_keyboard" in kb_text or "preview_keyboard" in kb_text, "keyboards preview/approval function"),
-            ("approve" in kb_text and "rerun" in kb_text and "reject" in kb_text, "keyboards 3 buttons"),
+            ("approval_keyboard" in kb_text or "preview_keyboard" in kb_text or "wizard_preview_keyboard" in kb_text, "keyboards preview/approval function"),
+            ("approve" in kb_text and "rerun" in kb_text and ("reject" in kb_text or "revert" in kb_text), "keyboards 3 buttons"),
             ("callback_data" in kb_text, "keyboards callback_data"),
+            ("wizard_preview_keyboard" in kb_text, "wizard preview keyboard"),
+            ("revert_choice_keyboard" in kb_text or "Use Last" in kb_text, "revert choice keyboard"),
         ]
         for passed, name in kb_checks:
             print(f"  kb check {name}: {'OK' if passed else 'MISSING'}")
@@ -441,7 +695,6 @@ def check_config_mode() -> int:
 # --- Telegram bot (only imported when actually running) ---------------
 
 def _build_bot():
-    # lazy imports so --dry-run / --check-config don't require Telegram token
     from telegram import Update
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
@@ -465,7 +718,6 @@ def _build_bot():
                     pass
 
     def _probe_duration(path: Path) -> int:
-        """Return duration seconds for preview caption, fallback 51."""
         try:
             import subprocess
             ffprobe = config.ffmpeg_dir / "ffprobe.exe"
@@ -479,17 +731,18 @@ def _build_bot():
         return 51
 
     async def _send_preview(job_id: str, video_path: Path, template: str, chat_id: int, bot, status_msg):
-        """Send preview video with approval keyboard and set AWAITING_APPROVAL."""
         dur = _probe_duration(video_path)
         caption = msgs.PREVIEW_CAPTION.format(template=template.zfill(2), dur=dur)
-        # job store already has AWAITING_APPROVAL set before calling
-        keyboard = kb.approval_keyboard(job_id)
+        # keep legacy keyboard for dry-run compat but also support wizard keyboard
         try:
-            # python-telegram-bot send_video needs file opened as binary
+            # per spec use wizard preview keyboard: confirm/rerun/revert (approve alias)
+            keyboard = kb.wizard_preview_keyboard(job_id)
+        except Exception:
+            keyboard = kb.approval_keyboard(job_id)
+        try:
             with open(video_path, "rb") as f:
                 await bot.send_video(chat_id=chat_id, video=f, caption=caption, reply_markup=keyboard, supports_streaming=True)
         except Exception as e:
-            # fallback: try send_document
             try:
                 with open(video_path, "rb") as f:
                     await bot.send_document(chat_id=chat_id, document=f, filename=video_path.name, caption=caption, reply_markup=keyboard)
@@ -507,7 +760,6 @@ def _build_bot():
         return True
 
     async def _do_upload(job_id: str, chat_id: int, bot, query_msg=None):
-        """Upload after approval — runs TikTok upload logic."""
         try:
             job = store.load(job_id)
         except Exception as e:
@@ -517,14 +769,12 @@ def _build_bot():
                 except Exception:
                     pass
             return
-        # guard already uploading/done
         if job.get("state") not in (AWAITING_APPROVAL, UPLOADING):
             try:
                 await query_msg.edit_text(f"⚠️ Job not awaiting approval (state={job.get('state')})")  # type: ignore
             except Exception:
                 pass
             return
-        # mark publishing
         if query_msg:
             try:
                 await query_msg.edit_text(msgs.PUBLISHING)
@@ -539,23 +789,28 @@ def _build_bot():
             store.set_state(job, UPLOADING)
         except Exception:
             pass
-        # resolve paths and desc
         job = store.load(job_id)
         tiktok_path = Path(job.get("result", {}).get("tiktok_path") or job.get("tiktok_path") or "")
         if not tiktok_path or not tiktok_path.exists():
-            # fallback: jobs/media/<id>_tiktok.mp4
             tiktok_path = config.jobs_dir / "media" / f"{job_id}_tiktok.mp4"
         template = job.get("template") or "01"
         caption = job.get("caption") or job.get("prompt") or ""
         title = job.get("title") or ""
         subtitle = job.get("subtitle") or ""
+        # hashtags stored in job if wizard
+        hashtags = job.get("hashtags") or []
+        if hashtags and isinstance(hashtags, list):
+            tags_str = " ".join(hashtags)
+            if caption and tags_str not in caption:
+                caption = (caption + " " + tags_str).strip()
+            if not caption:
+                caption = tags_str
         if template == "00":
             desc = caption
         else:
             desc = caption or f"{title} - {subtitle}".strip(" -")
         if desc and "#" not in desc:
             desc += " #حضارة #قيادة #تاريخ"
-        # publish via Waterfox cookies + Joyride Skip + confirm modal
         try:
             from scripts.publish_template01 import upload_tiktok
             res = await asyncio.to_thread(upload_tiktok, tiktok_path, desc, False)
@@ -602,125 +857,190 @@ def _build_bot():
         except Exception:
             pass
         registry.clear(job_id)
+        _wizard_clear(chat_id)
 
-    async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
-            return
-        name = (update.effective_user.first_name if update.effective_user else "there")
-        await update.message.reply_text(msgs.start(name))
-
-    async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
-            return
-        job = store.active_job()
-        if not job:
-            await update.message.reply_text(msgs.NOT_QUEUED_BY_YOU)
-            return
-        detail = job.get("state", "")
-        await update.message.reply_text(msgs.JOB_STATE.format(job_id=job["id"], state=job["state"], detail=detail))
-
-    async def interrupt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
-            return
-        job = store.active_job()
-        if not job or not interruptible(job):
-            await update.message.reply_text(msgs.INTERRUPTED_NO_JOB)
-            return
-        cur_state = job.get("state", "")
-        registry.request_interrupt(job["id"])
-        try:
-            store.set_state(store.load(job["id"]), CANCELLED)
-        except Exception:
-            pass
-        await update.message.reply_text(msgs.CANCELLED.format(stage=cur_state))
-
-    async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.callback_query:
-            return
-        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+    # --- wizard helpers ---
+    async def _wizard_send_thumbnail(chat_id: int, bot, probe: dict, url: str, duration: float | None):
+        """Send frame photo + default description per spec step 2. Tries thumbnail via yt-dlp probe thumbnail url, fallback to ffmpeg frame."""
+        title = probe.get("title") or "video"
+        channel = probe.get("uploader") or probe.get("channel") or probe.get("extractor") or "unknown"
+        dur_str = _fmt_secs(int(duration)) if isinstance(duration, (int, float)) and duration else "?"
+        thumb_url = probe.get("thumbnail") or probe.get("webpage_url") or None
+        # try thumbnails list
+        if not thumb_url and isinstance(probe.get("thumbnails"), list) and probe["thumbnails"]:
             try:
-                await update.callback_query.answer("⛔ Not allowed")
+                thumb_url = probe["thumbnails"][-1].get("url")
+            except Exception:
+                thumb_url = None
+        caption = msgs.WIZARD_THUMB_CAPTION.format(title=title[:120], channel=channel, duration=dur_str)
+        # try sending photo via URL if available, else just send text thumbnail placeholder
+        if thumb_url and thumb_url.startswith("http"):
+            try:
+                await bot.send_photo(chat_id=chat_id, photo=thumb_url, caption=caption)
+                return True
             except Exception:
                 pass
+            # try downloading via http and sending as file
+            try:
+                import urllib.request, tempfile
+                tmp = Path(tempfile.gettempdir()) / f"tg_thumb_{chat_id}.jpg"
+                urllib.request.urlretrieve(thumb_url, tmp)  # type: ignore
+                if tmp.exists() and tmp.stat().st_size > 0:
+                    with open(tmp, "rb") as f:
+                        await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                pass
+        # fallback: ffmpeg frame at 1s via yt-dlp --get-thumbnail equivalent not available; just send caption as text
+        try:
+            await bot.send_message(chat_id=chat_id, text=f"🖼️ {caption}\n{url}")
+        except Exception:
+            pass
+        return False
+
+    async def _wizard_ask_template(chat_id: int, bot):
+        wiz = _wizard_get(chat_id)
+        if not wiz:
             return
-        data = (update.callback_query.data or "").strip()
-        # parse action and job_id
-        action = data.split(":")[0] if ":" in data else data
-        job_id = data.split(":", 1)[1] if ":" in data else ""
-        # legacy without :id -> resolve active job
-        if not job_id:
-            aj = store.active_job()
-            if aj and aj.get("state") == AWAITING_APPROVAL:
-                job_id = aj["id"]
+        wiz["step"] = WIZARD_STEP_AWAITING_TEMPLATE
+        _wizard_set(chat_id, wiz)
+        try:
+            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_PROMPT)
+        except Exception:
+            pass
+
+    async def _wizard_ask_cut(chat_id: int, bot, duration: float | None):
+        wiz = _wizard_get(chat_id)
+        if not wiz:
+            return
+        # if cut already provided from initial message, skip
+        if wiz.get("cut_start") is not None and wiz.get("cut_end") is not None:
+            # skip asking, go to description
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_CUT_SAVED.format(start=_fmt_secs(wiz["cut_start"]), end=_fmt_secs(wiz["cut_end"])) + " (from your URL)")
+            except Exception:
+                pass
+            await _wizard_ask_description(chat_id, bot)
+            return
+        wiz["step"] = WIZARD_STEP_AWAITING_CUT
+        _wizard_set(chat_id, wiz)
+        dur_str = _fmt_secs(int(duration)) if isinstance(duration, (int, float)) and duration else "?"
+        # Show duration as 00:00-19:05 style; use _fmt_secs for end
+        end_fmt = _fmt_secs(int(duration)) if isinstance(duration, (int, float)) and duration else "?"
+        try:
+            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_CUT_PROMPT.format(end=end_fmt))
+        except Exception:
+            pass
+
+    async def _wizard_ask_description(chat_id: int, bot):
+        wiz = _wizard_get(chat_id)
+        if not wiz:
+            return
+        wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
+        _wizard_set(chat_id, wiz)
+        try:
+            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_DESCRIPTION_PROMPT)
+        except Exception:
+            pass
+
+    async def _wizard_ask_hashtags(chat_id: int, bot):
+        wiz = _wizard_get(chat_id)
+        if not wiz:
+            return
+        wiz["step"] = WIZARD_STEP_AWAITING_HASHTAGS
+        _wizard_set(chat_id, wiz)
+        try:
+            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_HASHTAGS_PROMPT)
+        except Exception:
+            pass
+
+    async def _wizard_trigger_preview(chat_id: int, bot, status_msg=None):
+        """Download + montage + send preview using wizard collected fields."""
+        wiz = _wizard_get(chat_id)
+        if not wiz:
+            return
+        url = wiz["url"]
+        template = wiz.get("template") or "00"
+        # cut handling: if still None, pick random 30s
+        cut_start = wiz.get("cut_start")
+        cut_end = wiz.get("cut_end")
+        if cut_start is None and cut_end is None:
+            dur = wiz.get("duration")
+            rs, re_ = random_30s_slice(dur)
+            if rs is not None and re_ is not None:
+                wiz["cut_start"] = rs
+                wiz["cut_end"] = re_
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_CUT_RANDOM.format(start=_fmt_secs(rs), end=_fmt_secs(re_)))
+                except Exception:
+                    pass
+                cut_start, cut_end = rs, re_
+        # description/hashtags combo
+        description = wiz.get("description") or ""
+        hashtags = wiz.get("hashtags") or []
+        if not description:
+            # fallback to probe title if skip
+            probe = wiz.get("probe") or {}
+            description = probe.get("title") or wiz.get("title") or ""
+        # caption for job
+        caption = description.strip()
+        if hashtags:
+            tags_str = " ".join(hashtags)
+            if caption and tags_str not in caption:
+                caption = (caption + " " + tags_str).strip()
+            elif not caption:
+                caption = tags_str
+        # For template 01, derive title/subtitle from description (split on -)
+        if template == "01":
+            t_title, t_sub, _ = parse_description(description, url)
+            # if parse_description returns default title but description provided, keep description as title
+            if not description:
+                t_title = wiz.get("title") or DEFAULT_TITLE
+                t_sub = DEFAULT_SUBTITLE
             else:
-                try:
-                    await update.callback_query.answer("No pending preview")
-                except Exception:
-                    pass
-                return
-        # always answer callback quickly
-        try:
-            await update.callback_query.answer()
-        except Exception:
-            pass
-        chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
-        qmsg = update.callback_query.message
-
-        if action == "approve":
-            # approve:<id> -> Publishing... -> upload
-            asyncio.create_task(_do_upload(job_id, chat_id, context.bot, qmsg))
-        elif action == "reject":
-            try:
-                j = store.load(job_id)
-                store.set_state(j, CANCELLED)
-                # optional delete temp preview file
-            except Exception:
-                pass
-            try:
-                await qmsg.edit_text(msgs.REJECTED)  # type: ignore
-            except Exception:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=msgs.REJECTED)
-                except Exception:
-                    pass
-            registry.clear(job_id)
-        elif action == "rerun":
-            try:
-                j = store.load(job_id)
-                store.update(j, awaiting_rerun=True)
-                # keep state AWAITING_APPROVAL, flag signals next text is new caption
-            except Exception:
-                pass
-            try:
-                await qmsg.edit_text(f"{msgs.RERUN_PROMPT} — awaiting your new text")  # type: ignore
-            except Exception:
-                pass
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=msgs.RERUN_PROMPT)
-            except Exception:
-                pass
-        elif action == "cancel":
-            # legacy cancel via inline button
-            try:
-                j = store.load(job_id)
-                if interruptible(j):
-                    registry.request_interrupt(job_id)
-                    store.set_state(j, CANCELLED)
-                    await qmsg.edit_text(msgs.CANCELLED.format(stage=j.get("state","")))  # type: ignore
+                # if description contains " - ", split; else treat whole as title
+                if " - " in description or " – " in description or " — " in description:
+                    parts = re.split(r"\s*[-–—]\s*", description, maxsplit=1)
+                    t_title = parts[0].strip() if parts and parts[0].strip() else DEFAULT_TITLE
+                    t_sub = parts[1].strip() if len(parts) > 1 and parts[1].strip() else DEFAULT_SUBTITLE
                 else:
-                    await qmsg.edit_text("⚠️ Cannot cancel now")  # type: ignore
-            except Exception:
-                pass
+                    t_title = description[:80]
+                    t_sub = DEFAULT_SUBTITLE
         else:
+            t_title = ""
+            t_sub = ""
+        handle = "@mventor"
+        # Determine start/end for download
+        start = cut_start
+        end = cut_end
+        # Create job store entry
+        try:
+            job = store.create(url, prompt=caption, template=template)
+            store.update(job, start=start, end=end, title=t_title, subtitle=t_sub, caption=caption, template=template, handle=handle, hashtags=hashtags, description=description)
+            wiz["job_id"] = job["id"]
+            wiz["step"] = WIZARD_STEP_AWAITING_APPROVAL
+            _wizard_set(chat_id, wiz)
+        except Exception as e:
             try:
-                await update.callback_query.answer(f"Unknown action: {action}")
+                await bot.send_message(chat_id=chat_id, text=msgs.ERROR_GENERIC.format(reason=str(e)))
             except Exception:
                 pass
+            return
+        # status msg for pipeline
+        if status_msg is None:
+            try:
+                status_msg = await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_MONTAGING.format(template=template))
+            except Exception:
+                status_msg = None
+        parsed = {"url": url, "start": start, "end": end, "template": template, "title": t_title, "subtitle": t_sub, "caption": caption, "handle": handle, "hashtags": hashtags, "description": description}
+        asyncio.create_task(_wizard_pipeline(job["id"], parsed, status_msg, chat_id, bot))
 
-    async def _pipeline(job_id: str, parsed: dict, status_msg, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        # late imports inside pipeline for thread usage
-        from pathlib import Path
-
+    async def _wizard_pipeline(job_id: str, parsed: dict, status_msg, chat_id: int, bot):
+        # reuse existing _pipeline logic but adapted for wizard caption/hashtags
         job = store.load(job_id)
         url = parsed["url"]
         start = parsed["start"]
@@ -731,12 +1051,8 @@ def _build_bot():
         template = parsed["template"]
         handle = parsed.get("handle", "@mventor")
         platform = job.get("platform", "") or JobStore.detect_platform(url) or ""
-        bot = context.bot
-
         async def edit(text: str):
             await _edit(status_msg, text, chat_id, bot)
-
-        # Stage: verifying (message already sent as VERIFYING)
         try:
             store.set_state(job, VERIFYING)
         except Exception:
@@ -748,7 +1064,6 @@ def _build_bot():
             except Exception:
                 pass
             return
-
         try:
             v = await asyncio.to_thread(verify_url, url, platform, job_id)
         except Exception as e:
@@ -769,9 +1084,17 @@ def _build_bot():
             except Exception:
                 pass
             registry.clear(job_id)
+            # wizard: inform invalid and ask new URL
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.INVALID_URL)
+            except Exception:
+                pass
+            # reset wizard to awaiting_url
+            wiz = _wizard_get(chat_id)
+            if wiz:
+                wiz["step"] = WIZARD_STEP_AWAITING_URL
+                _wizard_set(chat_id, wiz)
             return
-
-        # verified ok
         dur = v.get("duration")
         dur_str = f"{int(dur)}s" if isinstance(dur, (int, float)) and dur else "?"
         vtitle = v.get("title") or title or "video"
@@ -782,7 +1105,6 @@ def _build_bot():
         except Exception:
             pass
         await edit(msgs.VERIFIED_OK.format(title=vtitle, duration=dur_str, via=""))
-
         if registry.is_interrupted(job_id):
             await edit(msgs.CANCELLED.format(stage=VERIFIED))
             try:
@@ -790,8 +1112,6 @@ def _build_bot():
             except Exception:
                 pass
             return
-
-        # downloading
         if start is not None and end is not None:
             dl_text = f"⬇️ Downloading... Cut {_fmt_secs(start)}-{_fmt_secs(end)}"
         elif start is not None:
@@ -836,7 +1156,6 @@ def _build_bot():
             store.set_state(j, DOWNLOADED)
         except Exception:
             pass
-
         if not registry.should_proceed(job_id):
             await edit(msgs.CANCELLED.format(stage=DOWNLOADED))
             try:
@@ -844,8 +1163,6 @@ def _build_bot():
             except Exception:
                 pass
             return
-
-        # montaging
         montage_text = f"🎬 Montaging Template {template} (9:16)..."
         await edit(montage_text)
         try:
@@ -855,7 +1172,6 @@ def _build_bot():
         out_path = output_dir / f"{job_id}_tiktok.mp4"
         try:
             from scripts.tiktok_vertical_fast import vertical_fast
-
             await asyncio.to_thread(vertical_fast, Path(video_path), out_path, title, subtitle, "card", "#EAB308", handle)
             ok = out_path.exists() and out_path.stat().st_size > 0
             err = None if ok else "render produced no file"
@@ -880,9 +1196,12 @@ def _build_bot():
         try:
             j = store.load(job_id)
             store.update(j, result={"tiktok_path": str(out_path)}, tiktok_path=str(out_path), title=title, subtitle=subtitle, caption=caption, template=template, handle=handle)
+            # store wizard hashtagas etc also in job for upload
+            wiz = _wizard_get(chat_id)
+            if wiz and wiz.get("hashtags"):
+                store.update(j, hashtags=wiz["hashtags"])
         except Exception:
             pass
-
         if not registry.should_proceed(job_id):
             await edit(msgs.CANCELLED.format(stage=MONTAGING))
             try:
@@ -890,17 +1209,324 @@ def _build_bot():
             except Exception:
                 pass
             return
-
-        # === approval loop: SEND preview instead of auto-upload ===
         try:
             j = store.load(job_id)
             store.set_state(j, AWAITING_APPROVAL)
             store.update(j, awaiting_rerun=False)
         except Exception:
             pass
-        await _send_preview(job_id, out_path, template, chat_id, bot, status_msg)
-        # pipeline ends here — upload will be triggered by approve callback
-        # keep job in AWAITING_APPROVAL, do not clear interrupt flag yet
+        # update wizard preview path
+        wiz = _wizard_get(chat_id)
+        if wiz:
+            wiz["preview_path"] = str(out_path)
+            wiz["video_path"] = str(video_path)
+            _wizard_set(chat_id, wiz)
+        # send preview with wizard keyboard
+        dur_wiz = _probe_duration(out_path)
+        preview_caption = msgs.WIZARD_PREVIEW_CAPTION.format(template=template.zfill(2), duration=dur_wiz)
+        try:
+            keyboard = kb.wizard_preview_keyboard(job_id)
+        except Exception:
+            keyboard = kb.approval_keyboard(job_id)
+        try:
+            with open(out_path, "rb") as f:
+                await bot.send_video(chat_id=chat_id, video=f, caption=preview_caption, reply_markup=keyboard, supports_streaming=True)
+        except Exception as e:
+            try:
+                with open(out_path, "rb") as f:
+                    await bot.send_document(chat_id=chat_id, document=f, filename=out_path.name, caption=preview_caption, reply_markup=keyboard)
+            except Exception as e2:
+                await _edit(status_msg, msgs.ERROR_GENERIC.format(reason=f"preview send failed: {e} / {e2}"), chat_id, bot)
+                try:
+                    store.set_state(store.load(job_id), FAILED)
+                except Exception:
+                    pass
+                return
+        try:
+            await _edit(status_msg, msgs.WIZARD_PREVIEW_SENT, chat_id, bot)
+        except Exception:
+            pass
+
+    async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        name = (update.effective_user.first_name if update.effective_user else "there")
+        await update.message.reply_text(msgs.start(name))
+        # also prompt wizard
+        try:
+            await update.message.reply_text("Send /url or paste a video URL to start wizard v2")
+        except Exception:
+            pass
+
+    async def url_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        chat_id = update.effective_chat.id
+        # args after /url ?
+        text = (update.message.text or "").strip()
+        # extract url after /url
+        after = text[len("/url"):].strip() if text.lower().startswith("/url") else ""
+        if after:
+            # treat as URL paste with args
+            await handle_text(update, context)
+            return
+        wiz = {"step": WIZARD_STEP_AWAITING_URL, "url": None}
+        _wizard_set(chat_id, wiz)
+        await update.message.reply_text("🔗 Please send a video URL (with or without time cut like 'Cut 0.25 to 1.00')")
+
+    async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        job = store.active_job()
+        wiz = _wizard_get(update.effective_chat.id)
+        if wiz:
+            await update.message.reply_text(f"Wizard step: {wiz.get('step')} url={wiz.get('url') or '?'} template={wiz.get('template') or '?'}")
+            return
+        if not job:
+            await update.message.reply_text(msgs.NOT_QUEUED_BY_YOU)
+            return
+        detail = job.get("state", "")
+        await update.message.reply_text(msgs.JOB_STATE.format(job_id=job["id"], state=job["state"], detail=detail))
+
+    async def interrupt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        job = store.active_job()
+        if not job or not interruptible(job):
+            # also clear wizard if present
+            wiz = _wizard_get(update.effective_chat.id)
+            if wiz:
+                _wizard_clear(update.effective_chat.id)
+                await update.message.reply_text(msgs.CANCELLED.format(stage=wiz.get("step","wizard")))
+                return
+            await update.message.reply_text(msgs.INTERRUPTED_NO_JOB)
+            return
+        cur_state = job.get("state", "")
+        registry.request_interrupt(job["id"])
+        try:
+            store.set_state(store.load(job["id"]), CANCELLED)
+        except Exception:
+            pass
+        _wizard_clear(update.effective_chat.id)
+        await update.message.reply_text(msgs.CANCELLED.format(stage=cur_state))
+
+    async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.callback_query:
+            return
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            try:
+                await update.callback_query.answer("⛔ Not allowed")
+            except Exception:
+                pass
+            return
+        data = (update.callback_query.data or "").strip()
+        action = data.split(":")[0] if ":" in data else data
+        job_id = data.split(":", 1)[1] if ":" in data else ""
+        if not job_id:
+            aj = store.active_job()
+            if aj and aj.get("state") == AWAITING_APPROVAL:
+                job_id = aj["id"]
+            else:
+                wiz = _wizard_get(update.effective_chat.id) if update.effective_chat else None
+                if wiz and wiz.get("job_id"):
+                    job_id = wiz["job_id"]
+                else:
+                    try:
+                        await update.callback_query.answer("No pending preview")
+                    except Exception:
+                        pass
+                    return
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+        chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
+        qmsg = update.callback_query.message
+
+        # confirm/approve -> upload
+        if action in ("approve", "confirm"):
+            asyncio.create_task(_do_upload(job_id, chat_id, context.bot, qmsg))
+        elif action == "reject":
+            try:
+                j = store.load(job_id)
+                store.set_state(j, CANCELLED)
+            except Exception:
+                pass
+            try:
+                await qmsg.edit_text(msgs.REJECTED)  # type: ignore
+            except Exception:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.REJECTED)
+                except Exception:
+                    pass
+            registry.clear(job_id)
+            _wizard_clear(chat_id)
+        elif action == "revert":
+            # spec: Use last URL or paste a new URL with two buttons
+            try:
+                await qmsg.edit_text(msgs.WIZARD_REVERT_PROMPT)  # type: ignore
+            except Exception:
+                pass
+            try:
+                keyboard = kb.revert_choice_keyboard(job_id)
+                await context.bot.send_message(chat_id=chat_id, text=msgs.WIZARD_REVERT_PROMPT, reply_markup=keyboard)
+            except Exception:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.WIZARD_REVERT_PROMPT)
+                except Exception:
+                    pass
+            # keep job cancelled? spec revert should not remain in awaiting_approval
+            try:
+                j = store.load(job_id)
+                store.set_state(j, CANCELLED)
+            except Exception:
+                pass
+            # set wizard to await url choice
+            wiz = _wizard_get(chat_id)
+            if wiz:
+                wiz["step"] = WIZARD_STEP_AWAITING_URL
+                _wizard_set(chat_id, wiz)
+            else:
+                _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
+        elif action == "use_last":
+            # reuse last URL
+            last = LAST_URL.get(chat_id)
+            if not last:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="No last URL — please paste a new URL")
+                except Exception:
+                    pass
+                return
+            # restart wizard verification for last URL
+            try:
+                await qmsg.edit_text(f"♻️ Reusing last URL: {last}")  # type: ignore
+            except Exception:
+                pass
+            # simulate text handling via wizard init + verify
+            fake_update_text = last
+            # we cannot easily reuse handle_text; manually start verify task
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msgs.VERIFYING)
+            except Exception:
+                pass
+            # create short text pseudo
+            # Trigger wizard flow by calling verify inline
+            async def _reuse():
+                # verify last URL again
+                platform = JobStore.detect_platform(last) or ""
+                try:
+                    v = await asyncio.to_thread(verify_url, last, platform, job_id or "wizard-reuse")
+                except Exception as e:
+                    v = {"ok": False, "error": str(e)}
+                if not v.get("ok"):
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.INVALID_URL + f"\n{v.get('error','')}")
+                    except Exception:
+                        pass
+                    return
+                probe = v.get("probe") or {}
+                dur = v.get("duration")
+                title = v.get("title") or probe.get("title") or "video"
+                channel = probe.get("uploader") or probe.get("channel") or "unknown"
+                # parse cut if any in last URL? Last URL may contain cut pattern? Try parse
+                cs, ce, _ = parse_time_cut(last)
+                _wizard_init(chat_id, last, cs, ce, dur, probe, title, channel)
+                await _wizard_send_thumbnail(chat_id, context.bot, probe, last, dur)
+                await _wizard_ask_template(chat_id, context.bot)
+            asyncio.create_task(_reuse())
+        elif action == "new_url":
+            try:
+                await qmsg.edit_text("🔗 Please paste a new URL")  # type: ignore
+            except Exception:
+                pass
+            _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
+            try:
+                await context.bot.send_message(chat_id=chat_id, text="🔗 Please paste a new URL (with optional cut like 'Cut 0.25 to 1.00')")
+            except Exception:
+                pass
+        elif action == "rerun":
+            try:
+                j = store.load(job_id)
+                store.update(j, awaiting_rerun=True)
+            except Exception:
+                pass
+            try:
+                await qmsg.edit_text(f"{msgs.RERUN_PROMPT} — awaiting your new text")  # type: ignore
+            except Exception:
+                pass
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msgs.RERUN_PROMPT)
+            except Exception:
+                pass
+            # also update wizard step to awaiting description? For wizard flow, rerun means new description
+            wiz = _wizard_get(chat_id)
+            if wiz:
+                wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
+                _wizard_set(chat_id, wiz)
+        elif action == "cancel":
+            try:
+                j = store.load(job_id)
+                if interruptible(j):
+                    registry.request_interrupt(job_id)
+                    store.set_state(j, CANCELLED)
+                    await qmsg.edit_text(msgs.CANCELLED.format(stage=j.get("state","")))  # type: ignore
+                else:
+                    await qmsg.edit_text("⚠️ Cannot cancel now")  # type: ignore
+            except Exception:
+                pass
+            _wizard_clear(chat_id)
+        else:
+            try:
+                await update.callback_query.answer(f"Unknown action: {action}")
+            except Exception:
+                pass
+
+    async def _pipeline(job_id: str, parsed: dict, status_msg, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        # legacy single-shot pipeline (kept for backward compat, delegates to wizard pipeline)
+        await _wizard_pipeline(job_id, parsed, status_msg, chat_id, context.bot)
+
+    # --- wizard text router ---
+    async def _wizard_handle_url_verify(chat_id: int, bot, url: str, text: str, status_msg):
+        """Verify URL and start wizard thumbnail + template flow."""
+        platform = JobStore.detect_platform(url) or ""
+        try:
+            v = await asyncio.to_thread(verify_url, url, platform, f"wizard-{chat_id}")
+        except Exception as e:
+            v = {"ok": False, "error": str(e), "title": None, "duration": None, "probe": None}
+        if not v.get("ok"):
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.INVALID_URL)
+                await bot.send_message(chat_id=chat_id, text=f"Reason: {v.get('error','unknown')}\nPlease send a new URL with /url")
+            except Exception:
+                pass
+            wiz = _wizard_get(chat_id)
+            if wiz:
+                wiz["step"] = WIZARD_STEP_AWAITING_URL
+                _wizard_set(chat_id, wiz)
+            else:
+                _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
+            try:
+                if status_msg:
+                    await _edit(status_msg, msgs.INVALID_URL, chat_id, bot)
+            except Exception:
+                pass
+            return
+        # success
+        probe = v.get("probe") or {}
+        duration = v.get("duration")
+        title = v.get("title") or probe.get("title") or "video"
+        channel = probe.get("uploader") or probe.get("channel") or probe.get("extractor") or "unknown"
+        # parse cut from original text if any
+        cs, ce, _ = parse_time_cut(text)
+        _wizard_init(chat_id, url, cs, ce, duration, probe, title, channel)
+        # send thumbnail frame photo + default description caption
+        await _wizard_send_thumbnail(chat_id, bot, probe, url, duration)
+        try:
+            if status_msg:
+                await _edit(status_msg, msgs.VERIFIED_OK.format(title=title[:60], duration=f"{int(duration)}s" if isinstance(duration,(int,float)) and duration else "?", via=""), chat_id, bot)
+        except Exception:
+            pass
+        await _wizard_ask_template(chat_id, bot)
 
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
@@ -910,39 +1536,28 @@ def _build_bot():
         text = update.message.text.strip()
         if not text:
             return
+        chat_id = update.effective_chat.id
 
-        # --- rerun handling: if active job is awaiting approval with flag and no URL, treat as new caption ---
+        # rerun handling via JobStore flag (legacy)
         aj = store.active_job()
-        # check for awaiting_rerun flag (stored in job json)
         if aj and aj.get("state") == AWAITING_APPROVAL and aj.get("awaiting_rerun"):
             parsed_url = _extract_url(text)
-            # if text contains URL, treat as new job (user changed mind)
             if not parsed_url:
-                # this is rerun input — parse new title/subtitle/caption
-                # we fake a URL to reuse parse logic, then keep original URL
                 fake_url = aj.get("url") or "https://youtu.be/dummy"
-                # try to detect template switch in rerun text; if not, keep original
                 new_parsed = parse_message(f"{fake_url} {text}")
-                # if user didn't specify template, keep old
                 if "template" not in text.lower():
                     new_parsed["template"] = aj.get("template", "01")
-                    # re-parse title/caption without template strip? keep new values but respect template 00 handling
                     if new_parsed["template"] == "00":
                         new_parsed["title"] = ""
                         new_parsed["subtitle"] = ""
-                        # caption already extracted
-                    # else keep new_parsed title/subtitle
-                # also handle handle preservation
                 if not _has_no_watermark(text) and not aj.get("handle"):
                     new_parsed["handle"] = ""
-                # store new caption/title
                 try:
                     j = store.load(aj["id"])
                     store.update(j, title=new_parsed["title"], subtitle=new_parsed["subtitle"], caption=new_parsed["caption"], template=new_parsed["template"], handle=new_parsed.get("handle", "@mventor"), awaiting_rerun=False)
                 except Exception:
                     pass
                 status_msg = await update.message.reply_text(f"🔁 Rerunning montage Template {new_parsed['template']}...")
-                # re-run montage only (no re-download)
                 async def _rerun():
                     try:
                         aj2 = store.load(aj["id"])
@@ -984,26 +1599,144 @@ def _build_bot():
                 asyncio.create_task(_rerun())
                 return
 
-        parsed = parse_message(text)
-        if not parsed["url"]:
-            await update.message.reply_text(msgs.UNSUPPORTED_URL)
-            return
-        # create job
-        try:
-            job = store.create(parsed["url"], prompt=parsed["caption"], template=parsed["template"])
+        # --- wizard state machine routing ---
+        wiz = _wizard_get(chat_id)
+
+        # if wizard exists and in awaiting steps, route accordingly
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_TEMPLATE:
+            templ = parse_template_wizard(text)
+            wiz["template"] = templ
+            wiz["step"] = WIZARD_STEP_AWAITING_CUT  # will be handled by ask_cut which may skip
+            _wizard_set(chat_id, wiz)
             try:
-                store.update(job, start=parsed["start"], end=parsed["end"], title=parsed["title"], subtitle=parsed["subtitle"], caption=parsed["caption"], template=parsed["template"], handle=parsed.get("handle", "@mventor"))
+                await update.message.reply_text(msgs.WIZARD_TEMPLATE_SAVED.format(template=templ))
             except Exception:
                 pass
-        except Exception as e:
-            await update.message.reply_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+            await _wizard_ask_cut(chat_id, context.bot, wiz.get("duration"))
             return
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_CUT:
+            # try parse cut; handles "0.25 to 1.00" etc, also "0:25 to 1:00"
+            cs, ce, _ = parse_time_cut(text)
+            if cs is not None and ce is not None:
+                wiz["cut_start"] = cs
+                wiz["cut_end"] = ce
+                wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
+                _wizard_set(chat_id, wiz)
+                try:
+                    await update.message.reply_text(msgs.WIZARD_CUT_SAVED.format(start=_fmt_secs(cs), end=_fmt_secs(ce)))
+                except Exception:
+                    pass
+                await _wizard_ask_description(chat_id, context.bot)
+                return
+            # check for skip / empty -> random
+            if text.strip().lower() in ("/skip", "skip", "", "random", "nothing"):
+                dur = wiz.get("duration")
+                rs, re_ = random_30s_slice(dur)
+                if rs is not None:
+                    wiz["cut_start"] = rs
+                    wiz["cut_end"] = re_
+                    wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
+                    _wizard_set(chat_id, wiz)
+                    try:
+                        await update.message.reply_text(msgs.WIZARD_CUT_RANDOM.format(start=_fmt_secs(rs), end=_fmt_secs(re_)))
+                    except Exception:
+                        pass
+                else:
+                    wiz["cut_start"] = None
+                    wiz["cut_end"] = None
+                    wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
+                    _wizard_set(chat_id, wiz)
+                    try:
+                        await update.message.reply_text("✅ Using full video (shorter than 30s)")
+                    except Exception:
+                        pass
+                await _wizard_ask_description(chat_id, context.bot)
+                return
+            # if unrecognized, treat as skip with random per spec: "If no cut and full video: Bot randomly picks ONE 30s"
+            # But to avoid confusion, ask again
+            try:
+                await update.message.reply_text("❓ Could not parse cut. Send like '0:25 to 1:00' or 'Cut 0.25 to 1.00' or /skip for random 30s")
+            except Exception:
+                pass
+            return
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_DESCRIPTION:
+            if text.strip().lower() in ("/skip", "skip", ""):
+                wiz["description"] = ""
+            else:
+                # support "Description: ..." label
+                desc = parse_description_text_only(text, wiz.get("url"))
+                # if desc empty but text not skip, treat raw text as description
+                if not desc:
+                    desc = text.strip()
+                wiz["description"] = desc
+            wiz["step"] = WIZARD_STEP_AWAITING_HASHTAGS
+            _wizard_set(chat_id, wiz)
+            try:
+                if wiz["description"]:
+                    await update.message.reply_text(f"✅ Description saved: {wiz['description'][:120]}")
+                else:
+                    await update.message.reply_text("✅ Description skipped — will use video title")
+            except Exception:
+                pass
+            await _wizard_ask_hashtags(chat_id, context.bot)
+            return
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_HASHTAGS:
+            tags = parse_hashtags(text)
+            # also handle case where user sends /skip or empty -> no hashtags
+            if text.strip().lower() in ("/skip", "skip", ""):
+                tags = []
+            wiz["hashtags"] = tags
+            _wizard_set(chat_id, wiz)
+            try:
+                if tags:
+                    await update.message.reply_text(msgs.WIZARD_HASHTAGS_SAVED.format(tags=" ".join(tags)))
+                else:
+                    await update.message.reply_text("✅ No hashtags — proceeding")
+            except Exception:
+                pass
+            # trigger preview montage
+            status_msg = await update.message.reply_text(msgs.WIZARD_MONTAGING.format(template=wiz.get("template") or "00"))
+            await _wizard_trigger_preview(chat_id, context.bot, status_msg)
+            return
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_URL:
+            # awaiting new URL input for revert flow
+            url = _extract_url(text)
+            if not url:
+                try:
+                    await update.message.reply_text(msgs.INVALID_URL)
+                except Exception:
+                    pass
+                return
+            # restart wizard verify for new URL
+            status_msg = await update.message.reply_text(msgs.VERIFYING)
+            await _wizard_handle_url_verify(chat_id, context.bot, url, text, status_msg)
+            return
+        if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_APPROVAL:
+            # wizard is awaiting approval but user typed text instead of button — treat as maybe new caption? ignore or prompt
+            try:
+                await update.message.reply_text(msgs.WIZARD_PREVIEW_SENT)
+            except Exception:
+                pass
+            return
+
+        # --- no wizard in progress: treat as new URL entry (spec step 1) ---
+        parsed = parse_message(text)
+        url = parsed["url"] or _extract_url(text)
+        if not url:
+            # No URL found - if wizard is idle, prompt for URL. Check if text is /url handled elsewhere (command). Otherwise unsupported.
+            await update.message.reply_text(msgs.UNSUPPORTED_URL)
+            return
+        # URL found -> start wizard verification
         status_msg = await update.message.reply_text(msgs.VERIFYING)
-        asyncio.create_task(_pipeline(job["id"], parsed, status_msg, update.effective_chat.id, context))
+        await _wizard_handle_url_verify(chat_id, context.bot, url, text, status_msg)
+        # also handle case where user sent URL with cut already — _wizard_init inside verify will preserve cut
+        # template will be asked regardless; if user typed template explicitly, we could auto-store? For now ask again; step will handle.
+        # For backward compat single-shot jobs without wizard, also create job immediately? Wizard replaces that flow.
 
     # build application
     app = Application.builder().token(config.bot_token).build()
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("url", url_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("interrupt", interrupt_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))

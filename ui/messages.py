@@ -66,3 +66,29 @@ CANCEL_BUTTON = "✋ Cancel"
 ACCEPT_BUTTON = "✅ Accept"
 RERUN_BUTTON = "🔁 Rerun"
 REJECT_BUTTON = "❌ Reject"
+
+# --- wizard v2 ---
+INVALID_URL = "❌ Invalid or not downloadable — please send a valid video URL (YouTube, TikTok, Instagram, Facebook). Try again with /url"
+
+WIZARD_THUMB_CAPTION = "🎞️ {title}\n📺 {channel}\n⏱️ {duration}"
+WIZARD_TEMPLATE_PROMPT = (
+    "Select template no. — 00 (raw, no card) or 01 (9:16 + card + @mventor) — "
+    "type 00 or 01 or nothing (defaults to 00)"
+)
+WIZARD_TEMPLATE_SAVED = "✅ Template {template} saved"
+WIZARD_CUT_PROMPT = "Select cut 00:00 to {end} (video is 00:00-{end}) — send e.g. 0:25 to 1:00 or Cut 0.25 to 1.00 — or send /skip for random 30s"
+WIZARD_CUT_SAVED = "✅ Cut {start}-{end} saved"
+WIZARD_CUT_RANDOM = "🎲 Random 30s: {start}-{end}"
+WIZARD_DESCRIPTION_PROMPT = "Type Description (or skip — I'll take it from the video URL itself) — send /skip or empty to use video title"
+WIZARD_HASHTAGS_PROMPT = (
+    "Type Hashtags (unlimited, with or without # — e.g., تاريخ حضارة or #تاريخ #حضارة) - I'll normalize to #hashtags"
+)
+WIZARD_HASHTAGS_SAVED = "✅ Hashtags: {tags}"
+WIZARD_MONTAGING = "🎬 Montaging Template {template} (9:16)..."
+WIZARD_PREVIEW_CAPTION = "Preview Template {template} — {duration}s — 1080x1920 — Confirm to publish?"
+WIZARD_PREVIEW_SENT = "👀 Preview sent — Confirm to Upload / Rerun / Revert"
+WIZARD_REVERT_PROMPT = "Use last URL or paste a new URL"
+WIZARD_CONFIRM_BUTTON = "✅ Confirm to Upload"
+WIZARD_REVERT_BUTTON = "❌ Revert"
+WIZARD_USE_LAST_BUTTON = "Use Last URL"
+WIZARD_NEW_URL_BUTTON = "New URL"

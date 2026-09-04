@@ -47,3 +47,47 @@ def preview_keyboard(job_id: str = ""):
 
 def preview(job_id: str = ""):
     return approval_keyboard(job_id)
+
+
+# --- wizard v2 keyboards ---
+def wizard_preview_keyboard(job_id: str = ""):
+    """[✅ Confirm to Upload] [🔁 Rerun] [❌ Revert] per spec."""
+    suffix = f":{job_id}" if job_id else ""
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(m.WIZARD_CONFIRM_BUTTON, callback_data=f"confirm{suffix}"),
+                InlineKeyboardButton(m.RERUN_BUTTON, callback_data=f"rerun{suffix}"),
+                InlineKeyboardButton(m.WIZARD_REVERT_BUTTON, callback_data=f"revert{suffix}"),
+            ]
+        ])
+    return [
+        [
+            {"text": m.WIZARD_CONFIRM_BUTTON, "callback_data": f"confirm{suffix}"},
+            {"text": m.RERUN_BUTTON, "callback_data": f"rerun{suffix}"},
+            {"text": m.WIZARD_REVERT_BUTTON, "callback_data": f"revert{suffix}"},
+        ]
+    ]
+
+
+def revert_choice_keyboard(job_id: str = ""):
+    """[Use Last URL] [New URL]"""
+    suffix = f":{job_id}" if job_id else ""
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(m.WIZARD_USE_LAST_BUTTON, callback_data=f"use_last{suffix}"),
+                InlineKeyboardButton(m.WIZARD_NEW_URL_BUTTON, callback_data=f"new_url{suffix}"),
+            ]
+        ])
+    return [
+        [
+            {"text": m.WIZARD_USE_LAST_BUTTON, "callback_data": f"use_last{suffix}"},
+            {"text": m.WIZARD_NEW_URL_BUTTON, "callback_data": f"new_url{suffix}"},
+        ]
+    ]
+
+
+# keep approve/confirm aliases for callbacks
+def confirm_keyboard(job_id: str = ""):
+    return wizard_preview_keyboard(job_id)
