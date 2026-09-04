@@ -1,7 +1,6 @@
 """Open Studio Bot Retro Desktop Config GUI — Game Boy 8-bit edition.
 
-4-color palette, chunky pixel font, beep buttons.
-Run: .venv\Scripts\python.exe gui_config.py
+Run: .venv\\Scripts\\python.exe gui_config.py
 
 Sets: BOT_TOKEN (Telegram Bot API), ALLOWED_CHAT_ID, TIKTOK_HANDLE,
       WATERMARK_HANDLE, Waterfox profile + cookies, Templates 00/01.
@@ -42,10 +41,10 @@ C3 = "#9bbc0f"  # lightest (bg)
 C_BG = C3
 C_BTN = C2
 C_BTN_ACTIVE = C1
-C_TEXT = C0
-C_ENTRY_BG = "#e0f0a0"
-C_CLI_BG = C0
-C_CLI_FG = C3
+TEXT = C0
+ENTRY_BG = "#e0f0a0"
+CLI_BG = C0
+CLI_FG = C3
 
 DEPS = ["telegram", "httpx", "yt_dlp", "playwright", "PIL", "arabic_reshaper", "bidi", "cv2", "fontTools"]
 PIXEL_FONT = ("Courier", 9, "bold")
@@ -81,6 +80,15 @@ def save_env(updates):
     for k,v in env.items():
         lines.append(f"{k}={v}")
     ENV_PATH.write_text("\n".join(lines)+"\n", encoding="utf-8")
+    try:
+        import json
+        HANDLE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        HANDLE_JSON.write_text(__import__("json").dumps({"tiktok_handle": updates["TIKTOK_HANDLE"], "watermark_handle": updates[ "WATERMARK_HANDLE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def load_env_as_dict():
+    return load_env()
 
 def count_tiktok_cookies(profile):
     if not profile:
@@ -107,6 +115,43 @@ def count_tiktok_cookies(profile):
     except Exception as e:
         return 0, str(e)[:60]
 
+def verify_waterfox_status():
+    """Return (status_code, message) where status_code: 0=bad, 1=warning, 2=good"""
+    env = load_env()
+    p = Path(env.get("WATERFOX_PROFILE", os.path.join(os.environ.get("APPDATA", ""), "Waterfox", "Profiles")))
+    profile = None
+    if (p / "cookies.sqlite").exists():
+        profile = p
+    else:
+        for child in p.glob("*.default-release*"):
+            if (child / "cookies.sqlite").exists():
+                profile = child
+                break
+        if not profile:
+            for child in p.glob("*"):
+                if (child / "cookies.sqlite").exists():
+                    profile = child
+                    break
+    if not profile:
+        return 0, f"Waterfox profile not found at {p}"
+    n, msg = count_tiktok_cookies(profile)
+    if n >= 5 and "sessionid" in msg:
+        return 2, f"✓ {profile.name} — {n} cookies — {msg}"
+    elif n > 0:
+        return 1, f"⚠ {profile.name} — {n} cookies — {msg} — RE-LOGIN!"
+    else:
+        return 0, f"✗ {profile.name} — 0 cookies — NOT LOGGED IN"
+
+def check_missing_deps():
+    missing = []
+    for mod in DEPS:
+        if importlib.util.find_spec(mod) is None:
+            missing.append(mod)
+    ff = REPO / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin" / "ffmpeg.exe"
+    if not ff.exists():
+        missing.append("ffmpeg")
+    return missing
+
 class Retro8BitGUI:
     def __init__(self, root):
         self.root = root
@@ -121,23 +166,22 @@ class Retro8BitGUI:
 
         env = load_env()
 
-        # Remove the native title bar
+        # Title bar - Game Boy style with custom buttons
         self.root.overrideredirect(True)
 
-        # Custom title bar
         title_bar = tk.Frame(inner, bg=C0, height=32)
         title_bar.pack(fill="x", padx=3, pady=3)
 
         # Title label
-        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).pack(side="left", padx=8, pady=6)
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=TEXT, font=TITLE_FONT).pack(side="left", padx=8, pady=6)
 
         # Minimize button
-        minimize_btn = tk.Button(title_bar, text="–", bg=C0, fg=C3, font=("Courier", 10, "bold"),
+        minimize_btn = tk.Button(title_bar, text="–", bg=C0, fg=TEXT, font=("Courier", 10, "bold"),
                                  relief="raised", bd=3, width=2, command=self.minimize_window)
         minimize_btn.pack(side="right", padx=2, pady=2)
 
         # Close button
-        close_btn = tk.Button(title_bar, text="✖", bg=C0, fg=C3, font=("Courier", 10, "bold"),
+        close_btn = tk.Button(title_bar, text="✖", bg=C0, fg=TEXT, font=("Courier", 10, "bold"),
                               relief="raised", bd=3, width=2, command=self.root.destroy)
         close_btn.pack(side="right", padx=2, pady=2)
 
@@ -145,8 +189,8 @@ class Retro8BitGUI:
         title_bar.bind("<Button-1>", self.start_move)
         title_bar.bind("<B1-Motion>", self.on_move)
         # Also bind the label for easier dragging
-        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).bind("<Button-1>", self.start_move)
-        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=C3, font=TITLE_FONT).bind("<B1-Motion>", self.on_move)
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=TEXT, font=TITLE_FONT).bind("<Button-1>", self.start_move)
+        tk.Label(title_bar, text=" ▓ OPEN STUDIO BOT [ GAME BOY EDITION ] ▓ ", bg=C0, fg=TEXT, font=TITLE_FONT).bind("<B1-Motion>", self.on_move)
 
         # Scanline
         tk.Frame(inner, bg=C1, height=2).pack(fill="x", padx=3)
@@ -166,8 +210,8 @@ class Retro8BitGUI:
         self._pix_section(body, " [ WATERFOX PROFILE ] ")
         wf_row = tk.Frame(body, bg=C_BG)
         wf_row.pack(fill="x", pady=3)
-        tk.Label(wf_row, text="PROFILE:", bg=C_BG, fg=C_TEXT, font=PIXEL_FONT, width=14, anchor="w").pack(side="left")
-        self.wf_entry = tk.Entry(wf_row, bg=C_ENTRY_BG, fg=C_TEXT, relief="sunken", bd=3, font=("Courier", 8), insertbackground=C0)
+        tk.Label(wf_row, text="PROFILE:", bg=C_BG, fg=TEXT, font=PIXEL_FONT, width=14, anchor="w").pack(side="left")
+        self.wf_entry = tk.Entry(wf_row, bg=ENTRY_BG, fg=TEXT, relief="sunken", bd=3, font=("Courier", 8), insertbackground=C0)
         self.wf_entry.pack(side="left", fill="x", expand=True, padx=6)
         self.wf_entry.insert(0, env.get("WATERFOX_PROFILE", os.path.join(os.environ.get("APPDATA", ""), "Waterfox", "Profiles")))
         self._pix_btn(wf_row, "VERIFY!", self.verify_waterfox).pack(side="left", padx=4)
@@ -188,20 +232,55 @@ class Retro8BitGUI:
         # Action row - chunky 8-bit buttons
         btn_row = tk.Frame(body, bg=C_BG)
         btn_row.pack(fill="x", pady=12)
-        self._pix_btn(btn_row, " █ SAVE █ ", self.save_all, width=14, bg=C1, fg=C3).pack(side="left", padx=6)
+        self._pix_btn(btn_row, " ▓ SAVE ▓ ", self.save_all, width=14, bg=C1, fg=TEXT).pack(side="left", padx=6)
         self._pix_btn(btn_row, " CHECK DEPS ", self.check_deps, width=14).pack(side="left", padx=6)
         self._pix_btn(btn_row, " BEEP ", lambda: beep(), width=8).pack(side="left", padx=6)
 
         # Bottom CLI - Game Boy screen
         cli_outer = tk.Frame(inner, bg=C0, bd=3, relief="sunken")
         cli_outer.pack(fill="both", expand=True, padx=6, pady=6)
-        tk.Label(cli_outer, text=" -- CLI OUTPUT -- ", bg=C0, fg=C3, font=PIXEL_SMALL).pack(fill="x")
-        self.cli_text = tk.Text(cli_outer, bg=C_CLI_BG, fg=C_CLI_FG, font=("Courier", 8), height=9, wrap="word", relief="flat", bd=0, insertbackground=C_CLI_FG)
+        tk.Label(cli_outer, text=" ▓ CLI OUTPUT ▓ ", bg=C0, fg=CLI_FG, font=PIXEL_SMALL).pack(fill="x")
+        self.cli_text = tk.Text(cli_outer, bg=CLI_BG, fg=CLI_FG, font=("Courier", 8), height=9, wrap="word", relief="flat", bd=0, insertbackground=CLI_FG)
         self.cli_text.pack(fill="both", expand=True, padx=4, pady=4)
-        self.cli_text.insert("1.0", "> SYSTEM READY. Press CHECK DEPS to scan clean PC...\n> Use SAVE to write .env\n")
+        self.cli_text.insert("1.0", "▔ SYSTEM READY. Press CHECK DEPS to scan clean PC...\n▔ Use SAVE to write .env\n")
         self.cli_text.config(state="disabled")
 
         tk.Label(inner, text=" © 2026 OPEN STUDIO BOT  —  PRESS START  —  8-BIT EDITION ", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
+
+        # Run initial status checks
+        self.root.after(100, self._run_initial_checks)
+
+    def _pix_section(self, parent, title):
+        f = tk.Frame(parent, bg=C1, height=2)
+        f.pack(fill="x", pady=(10,2))
+        tk.Label(parent, text=title, bg=C_BG, fg=TEXT, font=("Courier", 8, "bold"), anchor="w").pack(fill="x")
+
+    def _pix_field(self, parent, label, value, show=None):
+        row = tk.Frame(parent, bg=C_BG)
+        row.pack(fill="x", pady=3)
+        tk.Label(row, text=label, bg=C_BG, fg=TEXT, font=PIXEL_FONT, width=16, anchor="w").pack(side="left")
+        e = tk.Entry(row, bg=ENTRY_BG, fg=TEXT, relief="sunken", bd=3, font=("Courier", 8), show=show or "", insertbackground=C0)
+        e.pack(side="left", fill="x", expand=True, padx=6)
+        e.insert(0, value)
+        return e
+
+    def _pix_btn(self, parent, text, cmd, width=10, bg=C_BTN, fg=TEXT):
+        def wrapped():
+            beep()
+            cmd()
+        b = tk.Button(parent, text=text, command=wrapped, bg=bg, fg=fg, font=PIXEL_FONT, relief="raised", bd=4, padx=8, pady=4, width=width, activebackground=C2, activeforeground=C0)
+        return b
+
+    def _pix_check(self, parent, text, var):
+        return tk.Checkbutton(parent, text=text, variable=var, bg=C_BG, fg=TEXT, selectcolor=ENTRY_BG, font=PIXEL_FONT, activebackground=C_BG, relief="flat", bd=0)
+
+    def _log(self, msg):
+        def _do():
+            self.cli_text.config(state="normal")
+            self.cli_text.insert("end", msg+"\n")
+            self.cli_text.see("end")
+            self.cli_text.config(state="disabled")
+        self.root.after(0, _do)
 
     def minimize_window(self):
         """Minimize: hide title bar temporarily so taskbar icon works."""
@@ -223,45 +302,40 @@ class Retro8BitGUI:
         y = max(0, self.root.winfo_y() + dy)
         self.root.geometry(f"+{x}+{y}")
 
-    def _pix_section(self, parent, title):
-        f = tk.Frame(parent, bg=C1, height=2)
-        f.pack(fill="x", pady=(10,2))
-        tk.Label(parent, text=title, bg=C_BG, fg=C0, font=("Courier", 8, "bold"), anchor="w").pack(fill="x")
+    def _run_initial_checks(self):
+        # Check Waterfox status
+        status_code, msg = verify_waterfox_status()
+        if status_code == 0:
+            self.wf_status.config(text=msg, fg="#8b0000")
+        elif status_code == 1:
+            self.wf_status.config(text=msg, fg="#8b5a00")
+        else:
+            self.wf_status.config(text=msg, fg=C1)
+        self._log(f"> Waterfox check: {msg}")
 
-    def _pix_field(self, parent, label, value, show=None):
-        row = tk.Frame(parent, bg=C_BG)
-        row.pack(fill="x", pady=3)
-        tk.Label(row, text=label, bg=C_BG, fg=C_TEXT, font=PIXEL_FONT, width=16, anchor="w").pack(side="left")
-        e = tk.Entry(row, bg=C_ENTRY_BG, fg=C_TEXT, relief="sunken", bd=3, font=("Courier", 8, "bold"), show=show or "", insertbackground=C0)
-        e.pack(side="left", fill="x", expand=True, padx=6)
-        e.insert(0, value)
-        return e
+        # Check deps (non-installing)
+        missing = check_missing_deps()
+        if missing:
+            self._log(f"> Missing deps: {', '.join(missing)}")
+        else:
+            self._log("> All core deps present")
 
-    def _pix_btn(self, parent, text, cmd, width=10, bg=C_BTN, fg=C_TEXT):
-        def wrapped():
-            beep()
-            cmd()
-        b = tk.Button(parent, text=text, command=wrapped, bg=bg, fg=fg, font=PIXEL_FONT, relief="raised", bd=4, padx=8, pady=4, width=width, activebackground=C2, activeforeground=C0)
-        return b
-
-    def _pix_check(self, parent, text, var):
-        return tk.Checkbutton(parent, text=text, variable=var, bg=C_BG, fg=C_TEXT, selectcolor=C_ENTRY_BG, font=PIXEL_FONT, activebackground=C_BG, relief="flat", bd=0)
-
-    def _log(self, msg):
-        def _do():
-            self.cli_text.config(state="normal")
-            self.cli_text.insert("end", msg+"\n")
-            self.cli_text.see("end")
-            self.cli_text.config(state="disabled")
-        self.root.after(0, _do)
+        # Warn if handles empty
+        env = load_env()
+        if not env.get("TIKTOK_HANDLE"):
+            self._log("⚠️ TikTok handle not set — use /set_handle in Telegram")
+        if not env.get("WATERMARK_HANDLE"):
+            self._log("⚠️ Watermark handle not set — use /set_handle in Telegram")
 
     def verify_waterfox(self):
         beep()
         p = Path(self.wf_entry.get().strip())
+        # try as dir or file's parent
         profile = None
         if (p / "cookies.sqlite").exists():
             profile = p
         else:
+            # search children
             for child in p.glob("*.default-release*"):
                 if (child / "cookies.sqlite").exists():
                     profile = child
@@ -293,13 +367,12 @@ class Retro8BitGUI:
             "TIKTOK_HANDLE": self.tiktok_handle.get().strip(),
             "WATERMARK_HANDLE": self.watermark_handle.get().strip(),
             "WATERFOX_PROFILE": self.wf_entry.get().strip(),
-            "ENABLED_TEMPLATES": ",".join([x for x, v in [("00", self.tmpl00.get()), ("01", self.tmpl01.get())] if v]),
+            "ENABLED_TEMPLATES": ",".join([x for x, v in [("00", self.tmpl00.get()), ( "01", self.tmpl01.get())] if v]),
         }
         for k in ("TIKTOK_HANDLE","WATERMARK_HANDLE"):
             if updates[k] and not updates[k].startswith("@"):
                 updates[k] = "@"+updates[k]
         # save .env
-        from pathlib import Path as P
         env = {}
         if ENV_PATH.exists():
             for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
@@ -326,7 +399,7 @@ class Retro8BitGUI:
         try:
             import json
             HANDLE_JSON.parent.mkdir(parents=True, exist_ok=True)
-            HANDLE_JSON.write_text(__import__("json").dumps({"tiktok_handle": updates["TIKTOK_HANDLE"], "watermark_handle": updates["WATERMARK_HANDLE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
+            HANDLE_JSON.write_text(__import__("json").dumps({"tiktok_handle": updates["TIKTOK_HANDLE"], "watermark_handle": updates[ "WATERMARK_HANDLE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
         self._log(f"> SAVED to .env + handle.json | Templates: {updates['ENABLED_TEMPLATES'] or 'none'}")

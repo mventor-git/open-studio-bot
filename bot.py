@@ -1648,6 +1648,23 @@ def _build_bot():
             await _prompt_handle_if_empty(update.effective_chat.id, context.bot)
         except Exception:
             pass
+        # cookie status check on start — surface failure clearly so the user knows
+        try:
+            from core.cookies import verify_tiktok_session
+            chk = await asyncio.to_thread(verify_tiktok_session)
+            if not chk.get("ok"):
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=("🦊 WATERFOX REQUIRED\n\n"
+                              "Open Waterfox → https://www.tiktok.com → log in to your account →\n"
+                              "then run /retry in this chat to confirm cookies.\n\n"
+                              f"Reason: {chk.get('reason', 'no session')}")
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
@@ -2545,13 +2562,20 @@ def _build_bot():
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
             return
         chat_id = update.effective_chat.id
-        # lazy re-verify cookies first
+        # full re-verify including cookie health + handle presence
         try:
             from core.cookies import verify_tiktok_session
+            from gui_config import verify_waterfox_status
+            from core.jobs import AWAITING_APPROVAL
             chk = await asyncio.to_thread(verify_tiktok_session)
             if not chk.get("ok"):
+                # also offer a status with the check helpers
+                status_code, wmsg = verify_waterfox_status()
                 try:
-                    await update.message.reply_text(msgs.COOKIE_EXPIRED + f"\n{chk.get('reason','')}")
+                    await update.message.reply_text(
+                        f"❌ TikTok session expired.\n{chk.get('reason','')}\n\nWaterfox check: {wmsg}\n\n"
+                        f"Open Waterfox → https://www.tiktok.com → log in → then /retry"
+                    )
                 except Exception:
                     pass
                 return
