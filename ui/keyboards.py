@@ -91,3 +91,105 @@ def revert_choice_keyboard(job_id: str = ""):
 # keep approve/confirm aliases for callbacks
 def confirm_keyboard(job_id: str = ""):
     return wizard_preview_keyboard(job_id)
+
+
+# --- control center (per user request) ---
+def control_center_keyboard():
+    """Main control center: Row1 [Docs][Help] Row2 [Templates] Row3 [Logs][Settings][Send URL]"""
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📚 Docs", callback_data="docs"),
+                InlineKeyboardButton("❓ Help", callback_data="help"),
+            ],
+            [
+                InlineKeyboardButton("🎨 Templates", callback_data="templates"),
+            ],
+            [
+                InlineKeyboardButton("📊 Logs", callback_data="logs"),
+                InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+                InlineKeyboardButton("🔗 Send URL", callback_data="send_url"),
+            ],
+        ])
+    return [
+        [
+            {"text": "📚 Docs", "callback_data": "docs"},
+            {"text": "❓ Help", "callback_data": "help"},
+        ],
+        [
+            {"text": "🎨 Templates", "callback_data": "templates"},
+        ],
+        [
+            {"text": "📊 Logs", "callback_data": "logs"},
+            {"text": "⚙️ Settings", "callback_data": "settings"},
+            {"text": "🔗 Send URL", "callback_data": "send_url"},
+        ],
+    ]
+
+
+def templates_list_keyboard():
+    """List view for templates — each template as button + back."""
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("▫️ Template 00 — Raw 9:16", callback_data="select_template_00"),
+            ],
+            [
+                InlineKeyboardButton("✨ Template 01 — TikTok Card", callback_data="select_template_01"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back to Control Center", callback_data="back_menu"),
+            ],
+        ])
+    return [
+        [
+            {"text": "▫️ Template 00 — Raw 9:16", "callback_data": "select_template_00"},
+        ],
+        [
+            {"text": "✨ Template 01 — TikTok Card", "callback_data": "select_template_01"},
+        ],
+        [
+            {"text": "⬅️ Back to Control Center", "callback_data": "back_menu"},
+        ],
+    ]
+
+
+def docs_keyboard():
+    """Docs view — optional send files + back."""
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📄 Send docs as files", callback_data="docs_send_files"),
+                InlineKeyboardButton("⬅️ Back", callback_data="back_menu"),
+            ]
+        ])
+    return [
+        [
+            {"text": "📄 Send docs as files", "callback_data": "docs_send_files"},
+            {"text": "⬅️ Back", "callback_data": "back_menu"},
+        ]
+    ]
+
+
+def help_keyboard():
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎨 Templates", callback_data="templates"),
+                InlineKeyboardButton("⬅️ Back", callback_data="back_menu"),
+            ]
+        ])
+    return [
+        [
+            {"text": "🎨 Templates", "callback_data": "templates"},
+            {"text": "⬅️ Back", "callback_data": "back_menu"},
+        ]
+    ]
+
+
+def back_menu_keyboard():
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back to Control Center", callback_data="back_menu")]
+        ])
+    return [[{"text": "⬅️ Back to Control Center", "callback_data": "back_menu"}]]

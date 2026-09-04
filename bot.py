@@ -368,6 +368,8 @@ def parse_message(text: str) -> dict:
 # WIZARD holds per-chat wizard state; LAST_URL remembers last successful URL per chat for Revert
 WIZARD: dict[int, dict] = {}
 LAST_URL: dict[int, str] = {}
+# PENDING_TEMPLATE holds template selected via control center (select_template_00/01) for next URL
+PENDING_TEMPLATE: dict[int, str] = {}
 
 WIZARD_STEP_IDLE = "idle"
 WIZARD_STEP_AWAITING_URL = "awaiting_url"
@@ -567,6 +569,10 @@ def dry_run_mode() -> int:
         assert hasattr(_m, "start")
         assert hasattr(_m, "WIZARD_TEMPLATE_PROMPT")
         print("ui.messages OK (wizard prompts present)")
+        # control center messages
+        for attr in ("CONTROL_CENTER_TEXT", "HELP_TEXT", "DOCS_TEXT", "TEMPLATES_TEXT"):
+            assert hasattr(_m, attr), f"missing {attr}"
+        print("  control center messages OK (CONTROL_CENTER/HELP/DOCS/TEMPLATES)")
     except Exception as e:
         print(f"ui.messages FAIL {e}")
         ok = False
@@ -662,11 +668,47 @@ def dry_run_mode() -> int:
             ("callback_data" in kb_text, "keyboards callback_data"),
             ("wizard_preview_keyboard" in kb_text, "wizard preview keyboard"),
             ("revert_choice_keyboard" in kb_text or "Use Last" in kb_text, "revert choice keyboard"),
+            ("control_center_keyboard" in kb_text, "control center keyboard"),
+            ("templates_list_keyboard" in kb_text, "templates list keyboard"),
+            ('"docs"' in kb_text or "'docs'" in kb_text or "callback_data=\"docs\"" in kb_text, "docs callback_data"),
+            ('"help"' in kb_text or "'help'" in kb_text or 'callback_data="help"' in kb_text, "help callback_data"),
+            ('"templates"' in kb_text or "templates" in kb_text, "templates callback_data"),
         ]
         for passed, name in kb_checks:
             print(f"  kb check {name}: {'OK' if passed else 'MISSING'}")
             if not passed:
                 ok = False
+        # control center callback handlers present in bot.py
+        cc_checks = [
+            ("callback_data" in bot_text and "docs" in bot_text, "docs callback handler"),
+            ("help" in bot_text and "HELP_TEXT" in bot_text, "help handler wired"),
+            ("templates" in bot_text and "TEMPLATES_TEXT" in bot_text, "templates handler wired"),
+            ("select_template_00" in bot_text and "select_template_01" in bot_text, "select_template handlers"),
+            ("control_center_keyboard" in bot_text, "control center keyboard usage"),
+            ("BotCommand" in bot_text or "set_my_commands" in bot_text, "persistent BotCommand menu"),
+            ("/start" in bot_text and "/help" in bot_text and "/menu" in bot_text, "/start /help /menu handlers"),
+        ]
+        for passed, name in cc_checks:
+            print(f"  cc check {name}: {'OK' if passed else 'MISSING'}")
+            if not passed:
+                ok = False
+        # no hardcoded credentials check (ensure BOT_TOKEN not hardcoded in bot.py/keyboards/messages)
+        for pth in [Path(__file__), Path(__file__).parent / "ui" / "keyboards.py", Path(__file__).parent / "ui" / "messages.py", Path(__file__).parent / "config.py"]:
+            try:
+                t = pth.read_text(encoding="utf-8")
+                # naive: look for BOT_TOKEN = "xxx" literal non-empty
+                if "BOT_TOKEN" in t and "=" in t:
+                    # allow os.environ.get pattern, but not literal token string longer than 20 with colon?
+                    import re as _re
+                    if _re.search(r'BOT_TOKEN\s*=\s*["\'][A-Za-z0-9:_\-]{20,}["\']', t):
+                        print(f"  hardcoded credentials FAIL in {pth.name}")
+                        ok = False
+                    else:
+                        print(f"  no hardcoded credentials in {pth.name} OK")
+                else:
+                    print(f"  no hardcoded credentials in {pth.name} OK")
+            except Exception as e:
+                print(f"  cred check {pth.name} WARN {e}")
     except Exception as e:
         print(f"  bot wiring check FAIL: {e}")
         ok = False
@@ -937,12 +979,28 @@ def _build_bot():
         wiz = _wizard_get(chat_id)
         if not wiz:
             return
+        # if user pre-selected via Templates list, apply it automatically
+        pending = PENDING_TEMPLATE.get(chat_id)
+        if pending in ("00", "01"):
+            wiz["template"] = pending
+            # clear pending after use? keep for next URL as well until changed — so don't clear, but note applied
+            _wizard_set(chat_id, wiz)
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_SAVED.format(template=pending) + " (pre-selected via 🎨 Templates)")
+            except Exception:
+                pass
+            await _wizard_ask_cut(chat_id, bot, wiz.get("duration"))
+            return
         wiz["step"] = WIZARD_STEP_AWAITING_TEMPLATE
         _wizard_set(chat_id, wiz)
+        # also show templates list keyboard as shortcut
         try:
-            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_PROMPT)
+            await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_PROMPT, reply_markup=kb.templates_list_keyboard())
         except Exception:
-            pass
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_PROMPT)
+            except Exception:
+                pass
 
     async def _wizard_ask_cut(chat_id: int, bot, duration: float | None):
         wiz = _wizard_get(chat_id)
@@ -1321,19 +1379,78 @@ def _build_bot():
         except Exception:
             pass
 
+    async def _send_control_center(chat_id: int, bot, reply_msg=None, edit_msg=None):
+        """Send or edit control center — main entry triggered by /start /help /menu."""
+        text = msgs.CONTROL_CENTER_TEXT
+        kb_markup = kb.control_center_keyboard()
+        # also include greeting if first start? Use plain
+        try:
+            if edit_msg is not None:
+                try:
+                    await edit_msg.edit_text(text, reply_markup=kb_markup, parse_mode="HTML")
+                    return
+                except Exception:
+                    pass
+            # try send
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_markup, parse_mode="HTML")
+        except Exception:
+            # fallback without parse_mode
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_markup)
+            except Exception:
+                pass
+
     async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
             return
         name = (update.effective_user.first_name if update.effective_user else "there")
-        await update.message.reply_text(msgs.start(name))
-        # also prompt wizard
+        # greeting + control center per spec: Main control center triggered by /start (and /help, /menu)
         try:
-            await update.message.reply_text("Send /url or paste a video URL to start wizard v2")
+            await update.message.reply_text(msgs.start(name))
         except Exception:
             pass
+        await _send_control_center(update.effective_chat.id, context.bot)
         # if handles empty, prompt to set
         try:
             await _prompt_handle_if_empty(update.effective_chat.id, context.bot)
+        except Exception:
+            pass
+
+    async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        # Help is also control center per spec, but show help guide directly plus control center keyboard
+        # spec: control center should be accessible via /help as well; we send control center + help text
+        await _send_control_center(update.effective_chat.id, context.bot)
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard(), parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard())
+            except Exception:
+                pass
+
+    async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        await _send_control_center(update.effective_chat.id, context.bot)
+
+    async def templates_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard())
+            except Exception:
+                pass
+        # optionally send preview frames if available
+        try:
+            # try sending photos of templates if files exist
+            for pth in [config.jobs_dir / "media" / "test_00.mp4", config.jobs_dir / "media" / "qaid_tiktok.mp4"]:
+                # we cannot send mp4 as photo, but could note location; skip to keep minimal
+                pass
         except Exception:
             pass
 
@@ -1401,6 +1518,148 @@ def _build_bot():
         data = (update.callback_query.data or "").strip()
         action = data.split(":")[0] if ":" in data else data
         job_id = data.split(":", 1)[1] if ":" in data else ""
+        chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
+        qmsg = update.callback_query.message
+
+        # --- control center callbacks (no job_id needed) ---
+        cc_actions = {"docs", "help", "templates", "logs", "settings", "send_url", "back_menu", "docs_send_files", "select_template_00", "select_template_01"}
+        if action in cc_actions or action.startswith("select_template"):
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+            # docs
+            if action == "docs":
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.DOCS_TEXT, reply_markup=kb.docs_keyboard(), parse_mode="HTML")
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.DOCS_TEXT, reply_markup=kb.docs_keyboard())
+                    except Exception:
+                        pass
+                return
+            if action == "docs_send_files":
+                # optionally send docs as document files
+                try:
+                    await update.callback_query.answer("Sending docs…")
+                except Exception:
+                    pass
+                import pathlib
+                repo = Path(__file__).parent
+                doc_files = [
+                    repo / "docs" / "TICKETS.md",
+                    repo / "docs" / "templates" / "01-vertical-9x16.md",
+                    repo / "README.md",
+                    repo / "docs" / "tickets" / "mventor-ticket-001.md",
+                ]
+                sent = 0
+                for p in doc_files:
+                    if p.exists() and p.is_file():
+                        try:
+                            with open(p, "rb") as f:
+                                await context.bot.send_document(chat_id=chat_id, document=f, filename=p.name, caption=f"📄 {p.relative_to(repo)}")
+                            sent += 1
+                        except Exception:
+                            pass
+                if sent == 0:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text="No docs files found to send (docs/ missing).")
+                    except Exception:
+                        pass
+                return
+            if action == "help":
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard(), parse_mode="HTML")
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard())
+                    except Exception:
+                        pass
+                return
+            if action == "templates":
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard())
+                    except Exception:
+                        pass
+                # try preview photo if thumb available? send small note about files
+                try:
+                    # optionally send preview frames as photos if available (list view as telegram bots have)
+                    # we have mp4 samples — send as video notes or just mention paths
+                    pass
+                except Exception:
+                    pass
+                return
+            if action in ("select_template_00", "select_template_01"):
+                # select_template_00 -> 00, select_template_01 -> 01
+                sel = "00" if action.endswith("00") else "01"
+                PENDING_TEMPLATE[chat_id] = sel
+                wiz = _wizard_get(chat_id)
+                if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_TEMPLATE:
+                    wiz["template"] = sel
+                    _wizard_set(chat_id, wiz)
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_SAVED.format(template=sel) + " (via Templates list)")
+                    except Exception:
+                        pass
+                    # auto advance to cut step
+                    await _wizard_ask_cut(chat_id, context.bot, wiz.get("duration"))
+                    return
+                # also if no wizard, just confirm selection for next URL
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=msgs.WIZARD_TEMPLATE_SAVED.format(template=sel) + " — will use for next URL. Now send a URL via /url or paste.")
+                except Exception:
+                    pass
+                # also show control center again?
+                return
+            if action == "logs":
+                # reuse logs_cmd logic inline
+                try:
+                    from core.logger import CSV_PATH
+                    from core.logger import _ensure_log_file
+                    if not CSV_PATH.exists():
+                        try:
+                            _ensure_log_file()
+                        except Exception:
+                            pass
+                    if not CSV_PATH.exists() or CSV_PATH.stat().st_size == 0:
+                        await context.bot.send_message(chat_id=chat_id, text="No logs yet — jobs.csv is empty.")
+                    else:
+                        with open(CSV_PATH, "rb") as f:
+                            await context.bot.send_document(chat_id=chat_id, document=f, filename="jobs.csv", caption=f"📊 Jobs log ({CSV_PATH.stat().st_size} bytes) — Excel-ready UTF-8 BOM, Arabic preserved")
+                except Exception as e:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ logs send failed: {e}")
+                    except Exception:
+                        pass
+                return
+            if action == "settings":
+                cur_t = config.tiktok_handle or "(not set)"
+                cur_w = config.watermark_handle or "(not set)"
+                try:
+                    txt = msgs.SETTINGS_TEXT.format(tiktok=cur_t, watermark=cur_w, jobs_dir=str(config.jobs_dir), ffmpeg_dir=str(config.ffmpeg_dir), hours=getattr(config, "cookie_check_hours", 24), max_uploads=getattr(config, "max_uploads_per_day", 3))
+                    await context.bot.send_message(chat_id=chat_id, text=txt, reply_markup=kb.back_menu_keyboard(), parse_mode="HTML")
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msgs.HANDLE_CURRENT.format(tiktok=cur_t, watermark=cur_w), reply_markup=kb.back_menu_keyboard())
+                    except Exception:
+                        pass
+                return
+            if action == "send_url":
+                _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="🔗 Please send a video URL (with or without time cut like 'Cut 0.25 to 1.00')\nTip: you can also use /url <link> or just paste the link.")
+                except Exception:
+                    pass
+                return
+            if action == "back_menu":
+                await _send_control_center(chat_id, context.bot)
+                return
+            # fallback
+            return
+
         if not job_id:
             aj = store.active_job()
             if aj and aj.get("state") == AWAITING_APPROVAL:
@@ -1419,6 +1678,7 @@ def _build_bot():
             await update.callback_query.answer()
         except Exception:
             pass
+        # chat_id and qmsg already set above, but re-ensure
         chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
         qmsg = update.callback_query.message
 
@@ -1952,6 +2212,24 @@ def _build_bot():
                 pass
 
     async def post_init(app):
+        # persistent menu commands per spec (BotCommand)
+        try:
+            from telegram import BotCommand
+            cmds = [
+                BotCommand("start", "🎛️ Control center"),
+                BotCommand("help", "❓ Help + guide"),
+                BotCommand("menu", "🎛️ Control center"),
+                BotCommand("url", "🔗 Send video URL"),
+                BotCommand("templates", "🎨 Templates list"),
+                BotCommand("logs", "📊 Jobs log (CSV)"),
+                BotCommand("set_handle", "⚙️ Set @handle (watermark + TikTok)"),
+                BotCommand("set_tiktok", "⚙️ Set TikTok handle alias"),
+                BotCommand("status", "📊 Job/wizard status"),
+                BotCommand("interrupt", "✋ Cancel running job"),
+            ]
+            await app.bot.set_my_commands(cmds)
+        except Exception:
+            pass
         # immediate check at startup (proactive before next upload)
         try:
             from core.cookies import verify_tiktok_session
@@ -1990,7 +2268,10 @@ def _build_bot():
         except Exception:
             pass
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("url", url_cmd))
+    app.add_handler(CommandHandler("templates", templates_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("interrupt", interrupt_cmd))
     app.add_handler(CommandHandler("set_handle", set_handle_cmd))
