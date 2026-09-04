@@ -74,15 +74,15 @@ This guide walks you through every step of using Open Studio Bot from install to
 
 Open **two separate terminal windows** (or PowerShell sessions). Do **not** start both in the same window — they run forever and block.
 
-### Terminal 1 — Opencode serve (montage brain)
+### Terminal 1 — Opencode serve (optional)
 
 ```powershell
 start-process "run_opencode_forever.bat"
 ```
 
-This launches `opencode serve --port 4096` and restarts it automatically if it crashes. Leave this window open.
+This launches `opencode serve --port 4096` and restarts it automatically if it crashes. Leave this window open. **Optional:** the Telegram wizard does not depend on opencode. Only the experimental dispatcher script `scripts/internal/dispatch_montage.py` (gitignored, internal use) uses it. If you don't have opencode installed, the opencode window will simply exit; the bot will still work.
 
-### Terminal 2 — Telegram bot
+### Terminal 2 — Telegram bot (required)
 
 ```powershell
 start-process "run_bot_forever.bat"

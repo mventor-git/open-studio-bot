@@ -10,6 +10,9 @@ screenshots/  # upload screenshots
 tools/  # bundled ffmpeg
 tests/media/  # downloaded test media
 .pytest_cache/
+# Internal Mventor dev workflow (not for end users)
+docs/internal/
+scripts/internal/
 .*_
 *.swp
 *.swo

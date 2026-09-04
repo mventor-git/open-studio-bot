@@ -104,6 +104,21 @@ if not exist "tools\ffmpeg-9.0.1-essentials_build\bin\ffmpeg.exe" (
 )
 
 echo.
+echo.
+echo  ================================================
+echo   Optional: opencode (montage brain)
+echo  ================================================
+where opencode >nul 2>&1
+if errorlevel 1 (
+    echo   opencode NOT FOUND - the bot will work normally without it.
+    echo   Only the experimental dispatcher in scripts\internal\ uses it.
+    echo   To install: https://github.com/sst/opencode  (winget install sst.opencode)
+    echo   Or skip this step and run the bot as-is.
+) else (
+    echo   opencode OK
+)
+
+echo.
 echo  ================================================
 echo   Setup complete! Launching Open Studio Bot...
 echo  ================================================
@@ -117,8 +132,8 @@ start "osb-bot" cmd /c "%REPO%\run_bot_forever.bat"
 
 echo.
 echo  Open Studio Bot is running!
-echo  - Opencode serve (montage brain) on port 4096
-echo  - Telegram bot (with T7 daily cookie check)
+echo  - Telegram bot (with daily cookie check every 24h)
+echo  - opencode serve on port 4096 (only needed for experimental dispatcher)
 echo.
 echo  To stop: taskkill /FI "WINDOWTITLE eq osb-*"
 echo.

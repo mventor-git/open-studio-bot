@@ -146,30 +146,30 @@ Git operations respect the `/ponytail` principle (laziness, minimal code, clean 
 
 ### Credits
 
-Built by **Mventor** agents:
+#### Development agents (dev‑time only — not bundled)
 
-- **Muse** — project identity, Wizards `muse-ticket-` tickets, profile management.
-- **Plan** — high‑level plan.
-- **Build** — implementation (T7, T8+).
+Open Studio Bot was built with the help of Mventor orchestration agents during development. **These are not bundled with this repo** — they are not required to run the bot, and a new user cloning the repo does not need them:
+
+- **Muse** — project identity, profiles, ticket hygiene.
+- **Plan** — high‑level planning and architectural decisions.
+- **Build** — heavy implementation work.
 - **General** — research, exploration, modular decomposition.
-- **Explore** — repository mapping, impact analysis.
+- **Explore** — repository mapping, impact analysis, code search.
 
-#### Core technologies referenced from other agents
+#### Models used during development (dev‑time only — not bundled)
 
-- **Muse** — `profile.md`, `tickets/` for project context.
-- **Plan** — abstract high‑level planning and orchestration.
-- **General** — research, analysis, and general-purpose tooling.
-- **Build** — implementation, heavy integration work.
-- **Explore** — repository discovery, searching, and code mapping.
-- **Webapp‑testing** — Playwright integration tests for TikTok Studio UI.
+The following models were used to generate the code in this repository. **None of them are embedded, bundled, or required to run the bot**. The runtime depends only on the packages listed in `requirements.txt`:
 
-#### Third‑party tools
+- Muse Spark 1.2 Free — Opencode
+- Omniroute Combo — Opencode‑Free (GLM 5.3 flash‑free, DeepSeek V4 flash vision‑exp‑free, HY3 free)
 
-- **OpenMontage** — development‑time pipeline; runtime uses the same installer (`pip install -r requirements.txt`).
-- **opencode serve** — LangChain‑style agent endpoint for building montages.
-- **opencode** — The Free Language Model, used by opencode serve.
+#### Third‑party projects
 
-OpenStudio Bot reimplements the core logic for YouTube/Instagram/Facebook/TikTok video verification, Waterfox cookie handling, and fast 9:16 vertical montage.
+- **OpenMontage** — open‑source video montage pipeline (the name and pipeline inspired the `9:16` vertical template). The dispatcher script `scripts/internal/dispatch_montage.py` (gitignored, internal use) calls into a local checkout of OpenMontage; this is **not required** for normal operation.
+- **opencode serve** — optional. The bot's `run_forever.bat` starts `opencode serve --port 4096`, but **only the experimental dispatcher script uses it**. The Telegram wizard (URL → download → vertical → preview → publish) does **not** depend on opencode. If you don't have opencode installed, the opencode window will simply exit; the bot will still work.
+- **Waterfox** — Firefox fork used to host the user's logged‑in TikTok/Instagram/Facebook session so the bot can read `cookies.sqlite` for the Playwright upload step.
+
+Open Studio Bot is a self‑contained, portable Python application. The development tools above are credited for transparency; they are not part of the runtime dependency tree.
 
 ### License
 
