@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_AR = Path(r"C:\Windows\Fonts\majallab.ttf")      # Sakkal Majalla Bold — full presentation forms (ت ا ة)
 FONT_AR_BODY = Path(r"C:\Windows\Fonts\majalla.ttf")       # Sakkal Majalla — elegant Naskh
 FONT_HANDLE = Path(r"C:\Windows\Fonts\segoeui.ttf")        # clean Latin for @handle
+FONT_EMOJI = Path(r"C:\Windows\Fonts\seguiemj.ttf")        # Segoe UI Emoji — color emoji fallback (Majalla has no emoji glyphs → ??)
 
 
 def shape_ar(text: str) -> str:
@@ -55,6 +56,83 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, ma
 
 def _rounded(draw: ImageDraw.ImageDraw, box, radius: int, fill, outline=None, width=0):
     draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+
+
+# --- Emoji handling: Majalla has no emoji glyphs → tofu ?? ------------------
+
+def _is_emoji_char(ch: str) -> bool:
+    cp = ord(ch)
+    # Any high codepoint (>= U+1F000) is emoji in our Arabic+emoji context
+    if cp >= 0x1F000:
+        return True
+    if 0x2600 <= cp <= 0x27BF:
+        return True
+    if 0x2300 <= cp <= 0x23FF:
+        return True
+    if cp in (0x00A9, 0x00AE, 0x200D):
+        return True
+    if 0xFE00 <= cp <= 0xFE0F:
+        return True
+    if 0x1F3FB <= cp <= 0x1F3FF:  # skin-tone modifiers
+        return True
+    if 0x1F1E6 <= cp <= 0x1F1FF:  # flags
+        return True
+    return False
+
+
+def _split_mixed(text: str) -> list[tuple[str, bool]]:
+    """Split text into (segment, is_emoji) runs for mixed-font rendering."""
+    if not text:
+        return []
+    runs: list[tuple[str, bool]] = []
+    cur = text[0]
+    cur_is = _is_emoji_char(text[0])
+    for ch in text[1:]:
+        is_e = _is_emoji_char(ch)
+        if is_e == cur_is:
+            cur += ch
+        else:
+            runs.append((cur, cur_is))
+            cur = ch
+            cur_is = is_e
+    runs.append((cur, cur_is))
+    return runs
+
+
+def _mixed_width(draw: ImageDraw.ImageDraw, text: str, font_ar: ImageFont.FreeTypeFont,
+                 font_emoji: ImageFont.FreeTypeFont) -> float:
+    w = 0.0
+    for seg, is_e in _split_mixed(text):
+        f = font_emoji if is_e else font_ar
+        try:
+            w += draw.textlength(seg, font=f, embedded_color=is_e)  # type: ignore[call-arg]
+        except TypeError:
+            w += draw.textlength(seg, font=f)
+    return w
+
+
+def _draw_mixed(draw: ImageDraw.ImageDraw, x: float, y: float, text: str,
+                font_ar: ImageFont.FreeTypeFont, font_emoji: ImageFont.FreeTypeFont,
+                fill, stroke_width: int = 0, stroke_fill=None) -> None:
+    """Draw text left-to-right mixing Arabic (Majalla) and emoji (seguiemj) fonts.
+    Emoji segments use embedded_color=True for color glyphs; stroke only on Arabic.
+    """
+    cx = x
+    for seg, is_e in _split_mixed(text):
+        f = font_emoji if is_e else font_ar
+        kw: dict = {"font": f, "fill": fill}
+        if is_e:
+            kw["embedded_color"] = True
+            # no stroke for color emoji (stroke would outline color glyph oddly)
+        elif stroke_width:
+            kw["stroke_width"] = stroke_width
+            kw["stroke_fill"] = stroke_fill
+        draw.text((cx, y), seg, **kw)
+        try:
+            w = draw.textlength(seg, font=f, embedded_color=is_e)  # type: ignore[call-arg]
+        except TypeError:
+            w = draw.textlength(seg, font=f)
+        cx += w
 
 
 # --- TikTok note logo (drawn, two-tone offset shadow) -----------------------
@@ -125,27 +203,30 @@ def tiktok_watermark(img: Image.Image, handle: str = "@mventor", size_frac: floa
 
 
 def card(img: Image.Image, title: str, subtitle: str = "",
-         accent: tuple = (234, 179, 8, 255),            # gold
-         panel: tuple = (0, 0, 0, 200),
+         accent: tuple = (234, 179, 8, 255),            # gold #EAB308 — vivid, configurable via --accent
+         panel: tuple = (18, 18, 18, 210),              # off-black elegant panel (was 0,0,0,200 too harsh)
          text_color: tuple = (255, 255, 255, 255),
          max_width_frac: float = 0.94, panel_pad: int = 36) -> Image.Image:
-    """Rounded card — wide + tall (Template 01: 9:16 TikTok for 16:9 source).
+    """Rounded card — compact (Template 01: 9:16 TikTok for 16:9 source).
     Right-aligned Arabic title + subtitle, accent bar on the RTL edge.
+    Emoji-aware: Majalla for Arabic, seguiemj for emoji (Majalla has no emoji glyphs).
     """
     w, h = img.size
     draw = ImageDraw.Draw(img, "RGBA")
     max_w = int(w * max_width_frac)
 
-    # larger Arabic fonts
+    # larger Arabic fonts + emoji fallback
     t_font = _font(FONT_AR, max(32, int(h * 0.052)))
     s_font = _font(FONT_AR_BODY, max(24, int(h * 0.040)))
+    t_font_emoji = _font(FONT_EMOJI, max(32, int(h * 0.052)))
+    s_font_emoji = _font(FONT_EMOJI, max(24, int(h * 0.040)))
     title_lines = _wrap(draw, shape_ar(title), t_font, max_w - panel_pad * 2 - 12)
     sub_lines = _wrap(draw, shape_ar(subtitle), s_font, max_w - panel_pad * 2 - 12) if subtitle else []
 
     title_h = t_font.size + 10
     sub_h = (s_font.size + 8) * len(sub_lines)
     base_h = panel_pad * 2 + title_h * len(title_lines) + (sub_h + 10 if sub_lines else 0)
-    card_h = int(base_h * 1.95)  # ~2x taller
+    card_h = base_h + 8  # compact — was base_h * 1.95 (too tall, ~2x)
 
     x0 = int((w - max_w) / 2)
     y0 = int(h - card_h - h * 0.04)
@@ -159,20 +240,20 @@ def card(img: Image.Image, title: str, subtitle: str = "",
     # accent bar (right edge, RTL side)
     _rounded(draw, (x1 - 10, y0 + 14, x1 - 2, y1 - 14), radius=5, fill=accent)
 
-    # center text vertically inside the taller card
+    # center text vertically inside the compact card
     content_h = title_h * len(title_lines) + (sub_h + 10 if sub_lines else 0)
     ty = y0 + (card_h - content_h) // 2
     tx = x1 - panel_pad - 12
     for ln in title_lines:
-        tw = draw.textlength(ln, font=t_font)
-        draw.text((tx - tw, ty), ln, font=t_font, fill=text_color,
-                  stroke_width=1, stroke_fill=(0, 0, 0, 90))
+        tw = _mixed_width(draw, ln, t_font, t_font_emoji)
+        _draw_mixed(draw, tx - tw, ty, ln, t_font, t_font_emoji, text_color,
+                    stroke_width=1, stroke_fill=(0, 0, 0, 90))
         ty += title_h
     ty += 6
     for ln in sub_lines:
-        tw = draw.textlength(ln, font=s_font)
-        draw.text((tx - tw, ty), ln, font=s_font, fill=(226, 226, 226, 255),
-                  stroke_width=1, stroke_fill=(0, 0, 0, 80))
+        tw = _mixed_width(draw, ln, s_font, s_font_emoji)
+        _draw_mixed(draw, tx - tw, ty, ln, s_font, s_font_emoji, (226, 226, 226, 255),
+                    stroke_width=1, stroke_fill=(0, 0, 0, 80))
         ty += s_font.size + 8
     return img
 
