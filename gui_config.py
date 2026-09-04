@@ -1,15 +1,14 @@
-"""TG-MONTAGE Retro Desktop Config GUI - set credentials, watermark, account, Waterfox verify.
+"""TG-MONTAGE Retro Desktop Config GUI — Game Boy 8-bit edition.
 
-Retro look: Win95 grey beveled buttons, navy title bar, pixel-ish fonts.
-Run: .venv\Scripts\python.exe gui_config.py  (or python gui_config.py)
+4-color palette, chunky pixel font, beep buttons.
+Run: .venv\Scripts\python.exe gui_config.py
 
-Sets: BOT_TOKEN (Telegram bot API), ALLOWED_CHAT_ID, TIKTOK_HANDLE, WATERMARK_HANDLE,
-      Waterfox profile + cookies, Templates 00/01 visibility.
+Sets: BOT_TOKEN (Telegram Bot API), ALLOWED_CHAT_ID, TIKTOK_HANDLE,
+      WATERMARK_HANDLE, Waterfox profile + cookies, Templates 00/01.
 Saves to .env + jobs/handle.json. Bottom CLI pops when deps are downloading.
 """
 import importlib.util
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -24,20 +23,33 @@ except ImportError:
     print("tkinter not available")
     sys.exit(1)
 
+try:
+    import winsound
+    def beep(): winsound.Beep(800, 80)
+except ImportError:
+    def beep(): pass
+
 REPO = Path(__file__).resolve().parent
 ENV_PATH = REPO / ".env"
 HANDLE_JSON = REPO / "jobs" / "handle.json"
 
-# Retro palette
-BG_GREY = "#C0C0C0"
-BG_DARK = "#000080"
-FG_WHITE = "white"
-FG_BLACK = "black"
-FG_GREEN = "#00FF00"
-BTN_BG = "#C0C0C0"
-ENTRY_BG = "white"
+# Game Boy 4-color palette
+C0 = "#0f380f"  # darkest
+C1 = "#306230"  # dark
+C2 = "#8bac0f"  # light
+C3 = "#9bbc0f"  # lightest (bg)
+C_BG = C3
+C_BTN = C2
+C_BTN_ACTIVE = C1
+C_TEXT = C0
+C_ENTRY_BG = "#e0f0a0"
+C_CLI_BG = C0
+C_CLI_FG = C3
 
 DEPS = ["telegram", "httpx", "yt_dlp", "playwright", "PIL", "arabic_reshaper", "bidi", "cv2", "fontTools"]
+PIXEL_FONT = ("Courier", 9, "bold")
+PIXEL_SMALL = ("Courier", 7)
+TITLE_FONT = ("Courier", 11, "bold")
 
 def load_env():
     env = {}
@@ -53,7 +65,6 @@ def load_env():
 def save_env(updates):
     env = load_env()
     env.update(updates)
-    # preserve .env.example order if .env missing keys: just write updates
     lines = []
     if ENV_PATH.exists():
         for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
@@ -70,25 +81,16 @@ def save_env(updates):
         lines.append(f"{k}={v}")
     ENV_PATH.write_text("\n".join(lines)+"\n", encoding="utf-8")
 
-def find_waterfox_profile():
-    env = load_env()
-    p = Path(env.get("WATERFOX_PROFILE", r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles"))
-    if (p / "cookies.sqlite").exists():
-        return p
-    for child in p.glob("*.default-release*"):
-        if (child / "cookies.sqlite").exists():
-            return child
-    for child in p.glob("*"):
-        if (child / "cookies.sqlite").exists():
-            return child
-    return None
-
 def count_tiktok_cookies(profile):
     if not profile:
         return 0, "No profile"
-    db = profile / "cookies.sqlite"
+    db = Path(profile) / "cookies.sqlite"
     if not db.exists():
-        return 0, "No cookies.sqlite"
+        # try as direct file
+        if Path(profile).is_file() and Path(profile).name=="cookies.sqlite":
+            db = Path(profile)
+        else:
+            return 0, "No cookies.sqlite"
     try:
         tmp = Path(tempfile.gettempdir()) / "wf_gui_cookies.sqlite"
         import shutil
@@ -100,101 +102,123 @@ def count_tiktok_cookies(profile):
         cur.execute("SELECT name FROM moz_cookies WHERE host LIKE '%tiktok.com%' AND name='sessionid'")
         has_sess = cur.fetchone() is not None
         con.close()
-        return n, "OK + sessionid" if has_sess else f"{n} cookies (no sessionid - not logged in)"
+        return n, "OK + sessionid" if has_sess else f"{n} cookies (no sessionid!)"
     except Exception as e:
         return 0, str(e)[:60]
 
-class RetroGUI:
+class Retro8BitGUI:
     def __init__(self, root):
         self.root = root
-        root.title("TG-MONTAGE CONFIG v1.0  —  Retro Desktop Configuration")
-        root.geometry("640x720")
-        root.configure(bg=BG_GREY)
+        root.title(" TG-MONTAGE  [ GAME BOY EDITION ] ")
+        root.geometry("680x740")
+        root.configure(bg=C0)
+        # outer bezel
+        outer = tk.Frame(root, bg=C0, bd=4, relief="flat")
+        outer.pack(fill="both", expand=True, padx=6, pady=6)
+        inner = tk.Frame(outer, bg=C_BG, bd=3, relief="raised")
+        inner.pack(fill="both", expand=True, padx=4, pady=4)
+
         env = load_env()
 
-        # Title bar
-        title = tk.Frame(root, bg=BG_DARK, height=28)
-        title.pack(fill="x", padx=2, pady=2)
-        tk.Label(title, text="  TG-MONTAGE  —  Telegram  +  Montage  +  Upload  —  CONFIG", bg=BG_DARK, fg=FG_WHITE, font=("Courier", 10, "bold")).pack(side="left", pady=4)
-        tk.Label(title, text="RETRO", bg=BG_DARK, fg="#FFCC00", font=("Courier", 8)).pack(side="right", padx=10)
+        # Title bar - Game Boy style
+        title = tk.Frame(inner, bg=C0, height=32)
+        title.pack(fill="x", padx=3, pady=3)
+        tk.Label(title, text=" ▓ TG-MONTAGE CONFIG ▓ ", bg=C0, fg=C3, font=TITLE_FONT).pack(side="left", padx=8, pady=6)
+        tk.Label(title, text="8-BIT", bg=C0, fg=C2, font=("Courier", 7, "bold")).pack(side="right", padx=10)
+        # scanline
+        tk.Frame(inner, bg=C1, height=2).pack(fill="x", padx=3)
+        tk.Label(inner, text="— INSERT CARTRIDGE —  TELEGRAM BOT API  ( @BotFather )  —", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
 
-        body = tk.Frame(root, bg=BG_GREY)
-        body.pack(fill="both", expand=True, padx=8, pady=6)
+        body = tk.Frame(inner, bg=C_BG)
+        body.pack(fill="both", expand=True, padx=10, pady=6)
 
-        # Telegram Bot API (NOT opencode!)
-        self._section(body, "TELEGRAM BOT API  (from @BotFather)")
-        self.bot_token = self._field(body, "BOT_TOKEN (Bot API):", env.get("BOT_TOKEN",""), show="*")
-        self.chat_id = self._field(body, "ALLOWED_CHAT_ID:", env.get("ALLOWED_CHAT_ID",""))
+        self._pix_section(body, " [ TELEGRAM BOT API ] ")
+        self.bot_token = self._pix_field(body, "BOT TOKEN:", env.get("BOT_TOKEN",""), show="*")
+        self.chat_id = self._pix_field(body, "CHAT ID:", env.get("ALLOWED_CHAT_ID",""))
 
-        self._section(body, "TIKTOK ACCOUNT  &  WATERMARK  (configurable, not hardcoded)")
-        self.tiktok_handle = self._field(body, "TIKTOK_HANDLE (@):", env.get("TIKTOK_HANDLE",""))
-        self.watermark_handle = self._field(body, "WATERMARK_HANDLE (@):", env.get("WATERMARK_HANDLE",""))
+        self._pix_section(body, " [ TIKTOK ACCOUNT + WATERMARK ] ")
+        self.tiktok_handle = self._pix_field(body, "TIKTOK @:", env.get("TIKTOK_HANDLE",""))
+        self.watermark_handle = self._pix_field(body, "WATERMARK @:", env.get("WATERMARK_HANDLE",""))
 
-        self._section(body, "WATERFOX  —  verify profile + cookies")
-        wf_row = tk.Frame(body, bg=BG_GREY)
-        wf_row.pack(fill="x", pady=2)
-        tk.Label(wf_row, text="WATERFOX_PROFILE:", bg=BG_GREY, fg=FG_BLACK, font=("MS Sans Serif", 8), width=22, anchor="w").pack(side="left")
-        self.wf_entry = tk.Entry(wf_row, bg=ENTRY_BG, fg=FG_BLACK, relief="sunken", bd=2, font=("Courier", 8))
-        self.wf_entry.pack(side="left", fill="x", expand=True, padx=4)
+        self._pix_section(body, " [ WATERFOX PROFILE ] ")
+        wf_row = tk.Frame(body, bg=C_BG)
+        wf_row.pack(fill="x", pady=3)
+        tk.Label(wf_row, text="PROFILE:", bg=C_BG, fg=C_TEXT, font=PIXEL_FONT, width=14, anchor="w").pack(side="left")
+        self.wf_entry = tk.Entry(wf_row, bg=C_ENTRY_BG, fg=C_TEXT, relief="sunken", bd=3, font=("Courier", 8), insertbackground=C0)
+        self.wf_entry.pack(side="left", fill="x", expand=True, padx=6)
         self.wf_entry.insert(0, env.get("WATERFOX_PROFILE", r"C:\Users\Mventor\AppData\Roaming\Waterfox\Profiles"))
-        self._retro_btn(wf_row, "VERIFY", self.verify_waterfox).pack(side="left", padx=4)
-        self.wf_status = tk.Label(body, text="Click VERIFY to check Waterfox + TikTok cookies", bg=BG_GREY, fg="#000080", font=("Courier", 8), anchor="w")
-        self.wf_status.pack(fill="x", padx=4)
+        self._pix_btn(wf_row, "VERIFY!", self.verify_waterfox).pack(side="left", padx=4)
+        self.wf_status = tk.Label(body, text="> Press VERIFY! to check Waterfox + cookies", bg=C_BG, fg=C1, font=PIXEL_SMALL, anchor="w")
+        self.wf_status.pack(fill="x", padx=4, pady=2)
 
-        self._section(body, "TEMPLATES  —  visible by checkbox")
+        self._pix_section(body, " [ TEMPLATES ] ")
         self.tmpl00 = tk.BooleanVar(value=True)
         self.tmpl01 = tk.BooleanVar(value=True)
-        # load from env if present: ENABLED_TEMPLATES=00,01
         enabled = env.get("ENABLED_TEMPLATES","00,01")
         self.tmpl00.set("00" in enabled)
         self.tmpl01.set("01" in enabled)
-        cb_frame = tk.Frame(body, bg=BG_GREY)
+        cb_frame = tk.Frame(body, bg=C_BG)
         cb_frame.pack(fill="x", pady=4)
-        tk.Checkbutton(cb_frame, text="Template 00  —  Raw 9:16  (clean, no card)", variable=self.tmpl00, bg=BG_GREY, fg=FG_BLACK, selectcolor=ENTRY_BG, font=("MS Sans Serif", 8)).pack(anchor="w", padx=12)
-        tk.Checkbutton(cb_frame, text="Template 01  —  TikTok Card  (Majalla + @watermark, 9:16)", variable=self.tmpl01, bg=BG_GREY, fg=FG_BLACK, selectcolor=ENTRY_BG, font=("MS Sans Serif", 8)).pack(anchor="w", padx=12)
+        self._pix_check(cb_frame, " [X] Template 00 — Raw 9:16 (clean)", self.tmpl00).pack(anchor="w", padx=12, pady=2)
+        self._pix_check(cb_frame, " [X] Template 01 — TikTok Card (Majalla)", self.tmpl01).pack(anchor="w", padx=12, pady=2)
 
-        # Action buttons
-        btn_row = tk.Frame(body, bg=BG_GREY)
-        btn_row.pack(fill="x", pady=10)
-        self._retro_btn(btn_row, "SAVE ALL", self.save_all, width=14).pack(side="left", padx=4)
-        self._retro_btn(btn_row, "CHECK DEPS", self.check_deps, width=14).pack(side="left", padx=4)
-        self._retro_btn(btn_row, "VERIFY", self.verify_waterfox, width=10).pack(side="left", padx=4)
+        # Action row - chunky 8-bit buttons
+        btn_row = tk.Frame(body, bg=C_BG)
+        btn_row.pack(fill="x", pady=12)
+        self._pix_btn(btn_row, " █ SAVE █ ", self.save_all, width=14, bg=C1, fg=C3).pack(side="left", padx=6)
+        self._pix_btn(btn_row, " CHECK DEPS ", self.check_deps, width=14).pack(side="left", padx=6)
+        self._pix_btn(btn_row, " BEEP ", lambda: beep(), width=8).pack(side="left", padx=6)
 
-        # Bottom CLI (hidden until deps downloading)
-        self.cli_frame = tk.Frame(root, bg="black", bd=2, relief="sunken")
-        self.cli_label = tk.Label(self.cli_frame, text=" CLI  —  deps download log ", bg="black", fg=FG_GREEN, font=("Courier", 8), anchor="w")
-        self.cli_label.pack(fill="x")
-        self.cli_text = tk.Text(self.cli_frame, bg="black", fg=FG_GREEN, font=("Courier", 8), height=10, wrap="word")
-        self.cli_text.pack(fill="both", expand=True, padx=2, pady=2)
+        # Bottom CLI - Game Boy screen
+        cli_outer = tk.Frame(inner, bg=C0, bd=3, relief="sunken")
+        cli_outer.pack(fill="both", expand=True, padx=6, pady=6)
+        tk.Label(cli_outer, text=" -- CLI OUTPUT -- ", bg=C0, fg=C3, font=PIXEL_SMALL).pack(fill="x")
+        self.cli_text = tk.Text(cli_outer, bg=C_CLI_BG, fg=C_CLI_FG, font=("Courier", 8), height=9, wrap="word", relief="flat", bd=0, insertbackground=C_CLI_FG)
+        self.cli_text.pack(fill="both", expand=True, padx=4, pady=4)
+        self.cli_text.insert("1.0", "> SYSTEM READY. Press CHECK DEPS to scan clean PC...\n> Use SAVE to write .env\n")
+        self.cli_text.config(state="disabled")
 
-        # Status bar
-        self.status = tk.Label(root, text=" Ready — edit fields, then SAVE ALL.  Templates checked = visible in Telegram.", bg=BG_GREY, fg=FG_BLACK, font=("Courier", 7), anchor="w", relief="sunken", bd=1)
-        self.status.pack(fill="x", padx=2, pady=2)
+        tk.Label(inner, text=" © 2026 TG-MONTAGE  —  PRESS START  —  8-BIT EDITION ", bg=C_BG, fg=C1, font=PIXEL_SMALL).pack(pady=2)
 
-    def _section(self, parent, title):
-        tk.Label(parent, text=title, bg=BG_GREY, fg="#800000", font=("Courier", 8, "bold"), anchor="w").pack(fill="x", pady=(10,2))
+    def _pix_section(self, parent, title):
+        f = tk.Frame(parent, bg=C1, height=2)
+        f.pack(fill="x", pady=(10,2))
+        tk.Label(parent, text=title, bg=C_BG, fg=C0, font=("Courier", 8, "bold"), anchor="w").pack(fill="x")
 
-    def _field(self, parent, label, value, show=None):
-        row = tk.Frame(parent, bg=BG_GREY)
-        row.pack(fill="x", pady=2)
-        tk.Label(row, text=label, bg=BG_GREY, fg=FG_BLACK, font=("MS Sans Serif", 8), width=22, anchor="w").pack(side="left")
-        e = tk.Entry(row, bg=ENTRY_BG, fg=FG_BLACK, relief="sunken", bd=2, font=("Courier", 8), show=show or "")
-        e.pack(side="left", fill="x", expand=True, padx=4)
+    def _pix_field(self, parent, label, value, show=None):
+        row = tk.Frame(parent, bg=C_BG)
+        row.pack(fill="x", pady=3)
+        tk.Label(row, text=label, bg=C_BG, fg=C_TEXT, font=PIXEL_FONT, width=16, anchor="w").pack(side="left")
+        e = tk.Entry(row, bg=C_ENTRY_BG, fg=C_TEXT, relief="sunken", bd=3, font=("Courier", 8, "bold"), show=show or "", insertbackground=C0)
+        e.pack(side="left", fill="x", expand=True, padx=6)
         e.insert(0, value)
         return e
 
-    def _retro_btn(self, parent, text, cmd, width=10):
-        b = tk.Button(parent, text=text, command=cmd, bg=BTN_BG, fg=FG_BLACK, font=("MS Sans Serif", 8, "bold"), relief="raised", bd=3, padx=6, pady=2, width=width, activebackground="#DFDFDF")
+    def _pix_btn(self, parent, text, cmd, width=10, bg=C_BTN, fg=C_TEXT):
+        def wrapped():
+            beep()
+            cmd()
+        b = tk.Button(parent, text=text, command=wrapped, bg=bg, fg=fg, font=PIXEL_FONT, relief="raised", bd=4, padx=8, pady=4, width=width, activebackground=C2, activeforeground=C0)
         return b
 
+    def _pix_check(self, parent, text, var):
+        return tk.Checkbutton(parent, text=text, variable=var, bg=C_BG, fg=C_TEXT, selectcolor=C_ENTRY_BG, font=PIXEL_FONT, activebackground=C_BG, relief="flat", bd=0)
+
+    def _log(self, msg):
+        def _do():
+            self.cli_text.config(state="normal")
+            self.cli_text.insert("end", msg+"\n")
+            self.cli_text.see("end")
+            self.cli_text.config(state="disabled")
+        self.root.after(0, _do)
+
     def verify_waterfox(self):
+        beep()
         p = Path(self.wf_entry.get().strip())
-        # try as dir or file's parent
         profile = None
         if (p / "cookies.sqlite").exists():
             profile = p
         else:
-            # search children
             for child in p.glob("*.default-release*"):
                 if (child / "cookies.sqlite").exists():
                     profile = child
@@ -205,15 +229,19 @@ class RetroGUI:
                         profile = child
                         break
         if not profile:
-            self.wf_status.config(text=f"✗ Waterfox not found at {p}", fg="red")
+            self.wf_status.config(text=f"✗ NOT FOUND: {p}", fg="#8b0000")
+            self._log(f"> WF FAIL: {p}")
             return
         n, msg = count_tiktok_cookies(profile)
         if n >= 5 and "sessionid" in msg:
-            self.wf_status.config(text=f"✓ {profile.name} — {n} tiktok cookies — {msg}", fg="#008000")
+            self.wf_status.config(text=f"✓ {profile.name} — {n} cookies — {msg}", fg=C1)
+            self._log(f"> WF OK: {profile.name} {n} cookies")
         elif n > 0:
-            self.wf_status.config(text=f"⚠ {profile.name} — {n} cookies — {msg} — re-login in Waterfox!", fg="#CC6600")
+            self.wf_status.config(text=f"⚠ {profile.name} — {n} cookies — {msg} — RE-LOGIN!", fg="#8b5a00")
+            self._log(f"> WF WARN: {msg}")
         else:
-            self.wf_status.config(text=f"✗ {profile.name} — 0 tiktok cookies — not logged in", fg="red")
+            self.wf_status.config(text=f"✗ {profile.name} — 0 cookies — NOT LOGGED IN", fg="#8b0000")
+            self._log("> WF FAIL: 0 cookies")
 
     def save_all(self):
         updates = {
@@ -224,79 +252,86 @@ class RetroGUI:
             "WATERFOX_PROFILE": self.wf_entry.get().strip(),
             "ENABLED_TEMPLATES": ",".join([x for x, v in [("00", self.tmpl00.get()), ("01", self.tmpl01.get())] if v]),
         }
-        # remove empty handle @ prefix handling: ensure @
         for k in ("TIKTOK_HANDLE","WATERMARK_HANDLE"):
             if updates[k] and not updates[k].startswith("@"):
                 updates[k] = "@"+updates[k]
-        save_env(updates)
-        # also persist handles to jobs/handle.json for bot runtime
+        # save .env
+        from pathlib import Path as P
+        env = {}
+        if ENV_PATH.exists():
+            for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if not line.strip() or line.strip().startswith("#") or "=" not in line:
+                    continue
+                kk,_,vv = line.partition("=")
+                env[kk.strip()] = vv.strip()
+        env.update(updates)
+        lines = []
+        if ENV_PATH.exists():
+            for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if not line.strip() or line.strip().startswith("#") or "=" not in line:
+                    lines.append(line)
+                    continue
+                kk,_,_ = line.partition("=")
+                kk=kk.strip()
+                if kk in env:
+                    lines.append(f"{kk}={env.pop(kk)}")
+                else:
+                    lines.append(line)
+        for kk,vv in env.items():
+            lines.append(f"{kk}={vv}")
+        ENV_PATH.write_text("\n".join(lines)+"\n", encoding="utf-8")
         try:
             import json
             HANDLE_JSON.parent.mkdir(parents=True, exist_ok=True)
-            HANDLE_JSON.write_text(json.dumps({"tiktok_handle": updates["TIKTOK_HANDLE"], "watermark_handle": updates["WATERMARK_HANDLE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
+            HANDLE_JSON.write_text(__import__("json").dumps({"tiktok_handle": updates["TIKTOK_HANDLE"], "watermark_handle": updates["WATERMARK_HANDLE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
-        self.status.config(text=f" Saved to .env + handle.json  |  Templates: {updates['ENABLED_TEMPLATES'] or 'none'} ")
-        messagebox.showinfo("Saved", "Credentials + handles + templates saved to .env\nRestart bot via run_forever.bat to apply.", parent=self.root)
+        self._log(f"> SAVED to .env + handle.json | Templates: {updates['ENABLED_TEMPLATES'] or 'none'}")
+        beep()
+        messagebox.showinfo("SAVED!", "8-BIT SAVE OK!\nRestart bot via run_forever.bat", parent=self.root)
 
     def check_deps(self):
-        self.cli_frame.pack(fill="both", expand=True, padx=4, pady=4)
-        self.cli_text.delete("1.0", "end")
-        self.cli_text.insert("end", ">>> Checking deps for clean Windows...\n")
-        self.cli_text.see("end")
+        beep()
+        self._log(">>> CHECKING DEPS for clean Windows...")
         def run():
-            missing = []
+            import importlib.util
             for mod in DEPS:
-                if importlib.util.find_spec(mod) is None:
-                    missing.append(mod)
-                    self._log(f"  MISSING: {mod}")
-                else:
-                    self._log(f"  OK: {mod}")
-            # ffmpeg
+                ok = importlib.util.find_spec(mod) is not None
+                self._log(f"  {'[OK]' if ok else '[MISS]'} {mod}")
             ff = REPO / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin" / "ffmpeg.exe"
+            self._log(f"  {'[OK]' if ff.exists() else '[MISS]'} ffmpeg")
+            wf = Path(self.wf_entry.get().strip())
+            has_wf = (wf / "cookies.sqlite").exists() if wf.exists() else False
+            self._log(f"  {'[OK]' if has_wf else '[MISS]'} Waterfox")
+            missing = [m for m in DEPS if importlib.util.find_spec(m) is None]
             if not ff.exists():
                 missing.append("ffmpeg")
-                self._log(f"  MISSING: ffmpeg at {ff}")
-            else:
-                self._log(f"  OK: ffmpeg")
-            # Waterfox
-            wf = find_waterfox_profile()
-            self._log(f"  Waterfox: {wf if wf else 'NOT FOUND'}")
-            # playwright browsers
-            try:
-                out = subprocess.run([sys.executable, "-m", "playwright", "--help"], capture_output=True, text=True, timeout=10)
-                self._log(f"  playwright: { 'OK' if out.returncode==0 else 'MISSING'}")
-            except Exception as e:
-                self._log(f"  playwright check fail: {e}")
             if missing:
-                self._log(f"\n>>> Installing missing: {', '.join(missing)} ...\n")
+                self._log(f"\n>>> INSTALLING {', '.join(missing)} ...")
                 try:
                     proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "-r", str(REPO / "requirements.txt")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
                     for line in proc.stdout:
                         self._log(line.rstrip())
                     proc.wait()
-                    self._log(f"\n>>> pip done code {proc.returncode}")
+                    self._log(f">>> pip exit {proc.returncode}")
                 except Exception as e:
-                    self._log(f"pip error: {e}")
-                # playwright browsers
+                    self._log(str(e))
                 try:
                     self._log(">>> playwright install chromium ...")
                     proc = subprocess.Popen([sys.executable, "-m", "playwright", "install", "chromium"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
                     for line in proc.stdout:
                         self._log(line.rstrip())
                     proc.wait()
-                    self._log(f">>> playwright done {proc.returncode}")
+                    self._log(f">>> playwright {proc.returncode}")
                 except Exception as e:
                     self._log(str(e))
             else:
-                self._log("\n>>> All deps OK — clean PC ready!")
-            self._log("\n>>> Done.")
+                self._log("\n>>> ALL DEPS OK - CLEAN PC READY! *BEEP*")
+                beep()
+            self._log(">>> DONE.")
         threading.Thread(target=run, daemon=True).start()
-
-    def _log(self, msg):
-        self.root.after(0, lambda: (self.cli_text.insert("end", msg+"\n"), self.cli_text.see("end")))
 
 if __name__ == "__main__":
     root = tk.Tk()
-    RetroGUI(root)
+    Retro8BitGUI(root)
     root.mainloop()
