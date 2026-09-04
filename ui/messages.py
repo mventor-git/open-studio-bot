@@ -45,6 +45,12 @@ UPLOADING = "📤 Uploading to TikTok..."
 POSTED = "✅ Posted — {link}"
 
 PREVIEW = "👀 Preview ready — accept or rerun?"
+PREVIEW_CAPTION = "Template {template} ready — {dur}s — 1080x1920 — Approve to publish?"
+AWAITING_APPROVAL = "👀 Preview sent — awaiting approval (Approve / Rerun / Reject)"
+PUBLISHING = "📤 Publishing..."
+REJECTED = "❌ Rejected"
+RERUN_PROMPT = "Send new Title / Subtitle or Description for rerun"
+APPROVED = "✅ Approved — publishing"
 
 CANCELLED = "🛑 Cancelled at stage: {stage}"
 
@@ -59,3 +65,4 @@ ERROR_GENERIC = "❌ Something went wrong: {reason}"
 CANCEL_BUTTON = "✋ Cancel"
 ACCEPT_BUTTON = "✅ Accept"
 RERUN_BUTTON = "🔁 Rerun"
+REJECT_BUTTON = "❌ Reject"
