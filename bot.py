@@ -1521,19 +1521,58 @@ def _build_bot():
         _wizard_set(chat_id, wiz)
         await update.message.reply_text("🔗 Please send a video URL (with or without time cut like 'Cut 0.25 to 1.00')")
 
+    def _last_error_summary() -> str:
+        """Return last error summary from jobs.csv or latest failed job (health check)."""
+        # 1) try latest failed/cancelled job via store
+        try:
+            all_jobs = store._all() if hasattr(store, "_all") else []
+            if all_jobs:
+                # sort by updated_at descending
+                all_jobs.sort(key=lambda j: (j.get("updated_at", 0), j.get("created_at", 0)), reverse=True)
+                for j in all_jobs:
+                    err = (j.get("result") or {}).get("error") or j.get("error") or ""
+                    if j.get("state") in ("failed", "cancelled") and err:
+                        return f"last {j.get('state')} {j.get('id')} : {err[:180]}"
+                    # also capture last terminal regardless
+                last = all_jobs[0]
+                if last.get("state") in (DONE, CANCELLED, FAILED):
+                    err = (last.get("result") or {}).get("error") or last.get("error") or "ok"
+                    return f"last job {last.get('id')} {last.get('state')} {err[:180] if err else ''}".strip()
+        except Exception:
+            pass
+        # 2) fallback to jobs.csv last line
+        try:
+            from pathlib import Path as _P
+            import csv
+            csv_path = _P(__file__).parent / "logs" / "jobs.csv"
+            if csv_path.exists() and csv_path.stat().st_size > 0:
+                with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                    reader = list(csv.DictReader(f))
+                    if reader:
+                        last = reader[-1]
+                        err = last.get("error", "") or last.get("status", "")
+                        return f"jobs.csv last: {last.get('job_id','?')} {last.get('status','?')} {err[:180]}".strip()
+        except Exception:
+            pass
+        return "no recent errors"
+
     async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
             return
         job = store.active_job()
         wiz = _wizard_get(update.effective_chat.id)
+        last_err = _last_error_summary()
         if wiz:
-            await update.message.reply_text(f"Wizard step: {wiz.get('step')} url={wiz.get('url') or '?'} template={wiz.get('template') or '?'}")
+            await update.message.reply_text(f"Wizard step: {wiz.get('step')} url={wiz.get('url') or '?'} template={wiz.get('template') or '?'} \n{last_err}")
             return
         if not job:
-            await update.message.reply_text(msgs.NOT_QUEUED_BY_YOU)
+            await update.message.reply_text(msgs.NOT_QUEUED_BY_YOU + f"\n{last_err}")
             return
         detail = job.get("state", "")
-        await update.message.reply_text(msgs.JOB_STATE.format(job_id=job["id"], state=job["state"], detail=detail))
+        # include last error if job has error, plus global last error
+        job_err = (job.get("result") or {}).get("error") or job.get("error") or ""
+        extra = f" error: {job_err[:200]}" if job_err else ""
+        await update.message.reply_text(msgs.JOB_STATE.format(job_id=job["id"], state=job["state"], detail=detail) + extra + f"\n{last_err}")
 
     async def interrupt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
@@ -2474,12 +2513,65 @@ def main() -> int:
         print("BOT_TOKEN not set")
         return 1
 
+    # ponytail: guard against duplicate instances (Telegram Conflict) via pid lock
+    import pathlib as _pl
+    lock_path = _pl.Path(__file__).parent / "logs" / "bot.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # best-effort pid file — if exists and process still alive, warn
+        if lock_path.exists():
+            try:
+                old_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+                if old_pid and old_pid != __import__("os").getpid():
+                    import psutil  # type: ignore
+                    if psutil.pid_exists(old_pid):
+                        print(f"Another bot instance may be running (pid {old_pid}) — will attempt to start, Telegram will return Conflict if duplicate")
+            except Exception:
+                # psutil not available — just warn if lock file exists
+                try:
+                    print(f"Lock file exists at {lock_path} — checking duplicate via Telegram Conflict handling")
+                except Exception:
+                    pass
+        try:
+            lock_path.write_text(str(__import__("os").getpid()), encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     print("Starting bot polling...")
     try:
         app = _build_bot()
         app.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
         print("bot stopped")
+    except Exception as e:
+        # Handle Telegram Conflict (duplicate bot instance)
+        msg = str(e).lower()
+        if "conflict" in msg or "terminated by other getupdates" in msg:
+            print(f"❌ Bot Conflict: another instance is already running (Telegram getUpdates conflict). Stop the other instance and retry. Details: {e}")
+            try:
+                lock_path.unlink(missing_ok=True)  # type: ignore
+            except Exception:
+                pass
+            return 2
+        # also handle network errors
+        print(f"bot polling error: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return 1
+    finally:
+        try:
+            if lock_path.exists():
+                # only remove if we own it
+                try:
+                    if int(lock_path.read_text(encoding="utf-8").strip() or "0") == __import__("os").getpid():
+                        lock_path.unlink(missing_ok=True)  # type: ignore
+                except Exception:
+                    lock_path.unlink(missing_ok=True)  # type: ignore
+        except Exception:
+            pass
     return 0
 
 
