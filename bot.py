@@ -1423,10 +1423,14 @@ def _build_bot():
         # spec: control center should be accessible via /help as well; we send control center + help text
         await _send_control_center(update.effective_chat.id, context.bot)
         try:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard(), parse_mode="HTML")
+            help_text = msgs.get_help_text() if hasattr(msgs, "get_help_text") else msgs.HELP_TEXT
+        except Exception:
+            help_text = msgs.HELP_TEXT
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=help_text, reply_markup=kb.help_keyboard(), parse_mode="HTML")
         except Exception:
             try:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard())
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=help_text, reply_markup=kb.help_keyboard())
             except Exception:
                 pass
 
@@ -1438,11 +1442,16 @@ def _build_bot():
     async def templates_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
             return
+        # dynamic handle: Template 01 watermark configurable via /set_handle (uses config.watermark_handle)
         try:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
+            tpl_text = msgs.get_templates_text() if hasattr(msgs, "get_templates_text") else msgs.TEMPLATES_TEXT
+        except Exception:
+            tpl_text = msgs.TEMPLATES_TEXT
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=tpl_text, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
         except Exception:
             try:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard())
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=tpl_text, reply_markup=kb.templates_list_keyboard())
             except Exception:
                 pass
         # Preview is generated on demand from the user's own video after they send URL — no hardcoded test files.
@@ -1521,13 +1530,18 @@ def _build_bot():
                 await update.callback_query.answer()
             except Exception:
                 pass
-            # docs
+            # docs — about the app (README.md, not tickets): format markdown headers -> bold for Telegram
             if action == "docs":
                 try:
-                    await context.bot.send_message(chat_id=chat_id, text=msgs.DOCS_TEXT, reply_markup=kb.docs_keyboard(), parse_mode="HTML")
+                    docs_text = msgs.get_docs_text() if hasattr(msgs, "get_docs_text") else msgs.DOCS_TEXT
+                except Exception:
+                    docs_text = msgs.DOCS_TEXT
+                # fallback: headers already stripped for Telegram (no hash headers)
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=docs_text, reply_markup=kb.docs_keyboard(), parse_mode="HTML")
                 except Exception:
                     try:
-                        await context.bot.send_message(chat_id=chat_id, text=msgs.DOCS_TEXT, reply_markup=kb.docs_keyboard())
+                        await context.bot.send_message(chat_id=chat_id, text=docs_text, reply_markup=kb.docs_keyboard())
                     except Exception:
                         pass
                 return
@@ -1539,10 +1553,11 @@ def _build_bot():
                     pass
                 import pathlib
                 repo = Path(__file__).parent
+                # app docs first: README is source of truth, tickets are internal
                 doc_files = [
-                    repo / "docs" / "TICKETS.md",
-                    repo / "docs" / "templates" / "01-vertical-9x16.md",
                     repo / "README.md",
+                    repo / "docs" / "templates" / "01-vertical-9x16.md",
+                    repo / "docs" / "TICKETS.md",
                     repo / "docs" / "tickets" / "mventor-ticket-001.md",
                 ]
                 sent = 0
@@ -1562,19 +1577,33 @@ def _build_bot():
                 return
             if action == "help":
                 try:
-                    await context.bot.send_message(chat_id=chat_id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard(), parse_mode="HTML")
+                    help_text = msgs.get_help_text() if hasattr(msgs, "get_help_text") else msgs.HELP_TEXT
+                    # ensure dynamic handle for watermark line
+                    if "{handle}" in help_text:
+                        try:
+                            help_text = msgs.get_help_text()
+                        except Exception:
+                            pass
+                except Exception:
+                    help_text = msgs.HELP_TEXT
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=help_text, reply_markup=kb.help_keyboard(), parse_mode="HTML")
                 except Exception:
                     try:
-                        await context.bot.send_message(chat_id=chat_id, text=msgs.HELP_TEXT, reply_markup=kb.help_keyboard())
+                        await context.bot.send_message(chat_id=chat_id, text=help_text, reply_markup=kb.help_keyboard())
                     except Exception:
                         pass
                 return
             if action == "templates":
                 try:
-                    await context.bot.send_message(chat_id=chat_id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
+                    tpl_text = msgs.get_templates_text() if hasattr(msgs, "get_templates_text") else msgs.TEMPLATES_TEXT
+                except Exception:
+                    tpl_text = msgs.TEMPLATES_TEXT
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=tpl_text, reply_markup=kb.templates_list_keyboard(), parse_mode="HTML")
                 except Exception:
                     try:
-                        await context.bot.send_message(chat_id=chat_id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard())
+                        await context.bot.send_message(chat_id=chat_id, text=tpl_text, reply_markup=kb.templates_list_keyboard())
                     except Exception:
                         pass
                 # try preview photo if thumb available? send small note about files
