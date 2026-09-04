@@ -802,21 +802,70 @@ def _build_bot():
         return True
 
     async def _do_upload(job_id: str, chat_id: int, bot, query_msg=None):
+        # ponytail: robust upload entry — detailed logging + fallback scan
+        def _ulog(msg: str):
+            try:
+                from pathlib import Path as _P
+                _lp = _P(__file__).parent / "logs" / "callback.log"
+                _lp.parent.mkdir(parents=True, exist_ok=True)
+                import datetime as _dt
+                line = f"{_dt.datetime.now().isoformat()} _do_upload {msg}\n"
+                with open(_lp, "a", encoding="utf-8", errors="replace") as _f:
+                    _f.write(line)
+            except Exception:
+                pass
         try:
             job = store.load(job_id)
         except Exception as e:
-            if query_msg:
+            _ulog(f"job_id={job_id} load fail {e}")
+            # fallback: scan for latest awaiting approval if load fails (e.g. empty id after restart)
+            try:
+                all_jobs = store._all() if hasattr(store, "_all") else []
+                cand = [j for j in all_jobs if j.get("state") == AWAITING_APPROVAL]
+                if cand:
+                    cand.sort(key=lambda j: (j.get("updated_at", 0), j.get("created_at", 0), j.get("id","")), reverse=True)
+                    job = cand[0]
+                    job_id = job["id"]
+                    _ulog(f"fallback to latest awaiting job {job_id} state={job.get('state')}")
+                else:
+                    raise
+            except Exception:
                 try:
-                    await query_msg.edit_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+                    if query_msg:
+                        try:
+                            await query_msg.edit_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+                        except Exception:
+                            pass
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=msgs.ERROR_GENERIC.format(reason=str(e)))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-            return
-        if job.get("state") not in (AWAITING_APPROVAL, UPLOADING):
-            try:
-                await query_msg.edit_text(f"⚠️ Job not awaiting approval (state={job.get('state')})")  # type: ignore
-            except Exception:
+                return
+        _ulog(f"job_id={job_id} state={job.get('state')} chat_id={chat_id} entry")
+        state = job.get("state")
+        if state not in (AWAITING_APPROVAL, UPLOADING):
+            if state in (DOWNLOADED, MONTAGING):
+                _ulog(f"job {job_id} state {state} treated as awaiting_approval (preview lag) -> proceed")
+                # allow to proceed — preview was sent but state not updated
                 pass
-            return
+            else:
+                msg = f"⚠️ Job not awaiting approval (state={state}) — please send a new URL via /url if needed"
+                _ulog(f"early exit state={state} job={job_id}")
+                try:
+                    if query_msg:
+                        try:
+                            await query_msg.edit_text(msg)  # type: ignore
+                        except Exception:
+                            pass
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=msg)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                return
         if query_msg:
             try:
                 await query_msg.edit_text(msgs.PUBLISHING)
@@ -1518,20 +1567,35 @@ def _build_bot():
                 pass
             return
         data = (update.callback_query.data or "").strip()
-        action = data.split(":")[0] if ":" in data else data
+        raw_action = data.split(":")[0] if ":" in data else data
+        action = raw_action.strip()
+        action_low = action.lower()
         job_id = data.split(":", 1)[1] if ":" in data else ""
         chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
         qmsg = update.callback_query.message
+        # ponytail: detailed callback logging (file + optional bot message)
+        def _cb_log(msg: str):
+            try:
+                from pathlib import Path as _P
+                _lp = _P(__file__).parent / "logs" / "callback.log"
+                _lp.parent.mkdir(parents=True, exist_ok=True)
+                import datetime as _dt
+                line = f"{_dt.datetime.now().isoformat()} callback action={action} job_id={job_id} chat={chat_id} data={data!r} {msg}\n"
+                with open(_lp, "a", encoding="utf-8", errors="replace") as _f:
+                    _f.write(line)
+            except Exception:
+                pass
+        _cb_log("recv")
 
         # --- control center callbacks (no job_id needed) ---
         cc_actions = {"docs", "help", "templates", "logs", "settings", "send_url", "back_menu", "docs_send_files", "select_template_00", "select_template_01"}
-        if action in cc_actions or action.startswith("select_template"):
+        if action_low in cc_actions or action_low.startswith("select_template"):
             try:
                 await update.callback_query.answer()
             except Exception:
                 pass
             # docs — about the app (README.md, not tickets): format markdown headers -> bold for Telegram
-            if action == "docs":
+            if action_low == "docs":
                 try:
                     docs_text = msgs.get_docs_text() if hasattr(msgs, "get_docs_text") else msgs.DOCS_TEXT
                 except Exception:
@@ -1545,7 +1609,7 @@ def _build_bot():
                     except Exception:
                         pass
                 return
-            if action == "docs_send_files":
+            if action_low == "docs_send_files":
                 # optionally send docs as document files
                 try:
                     await update.callback_query.answer("Sending docs…")
@@ -1575,7 +1639,7 @@ def _build_bot():
                     except Exception:
                         pass
                 return
-            if action == "help":
+            if action_low == "help":
                 try:
                     help_text = msgs.get_help_text() if hasattr(msgs, "get_help_text") else msgs.HELP_TEXT
                     # ensure dynamic handle for watermark line
@@ -1594,7 +1658,7 @@ def _build_bot():
                     except Exception:
                         pass
                 return
-            if action == "templates":
+            if action_low == "templates":
                 try:
                     tpl_text = msgs.get_templates_text() if hasattr(msgs, "get_templates_text") else msgs.TEMPLATES_TEXT
                 except Exception:
@@ -1614,9 +1678,9 @@ def _build_bot():
                 except Exception:
                     pass
                 return
-            if action in ("select_template_00", "select_template_01"):
+            if action_low in ("select_template_00", "select_template_01"):
                 # select_template_00 -> 00, select_template_01 -> 01
-                sel = "00" if action.endswith("00") else "01"
+                sel = "00" if action_low.endswith("00") else "01"
                 PENDING_TEMPLATE[chat_id] = sel
                 wiz = _wizard_get(chat_id)
                 if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_TEMPLATE:
@@ -1636,7 +1700,7 @@ def _build_bot():
                     pass
                 # also show control center again?
                 return
-            if action == "logs":
+            if action_low == "logs":
                 # reuse logs_cmd logic inline
                 try:
                     from core.logger import CSV_PATH
@@ -1657,7 +1721,7 @@ def _build_bot():
                     except Exception:
                         pass
                 return
-            if action == "settings":
+            if action_low == "settings":
                 cur_t = config.tiktok_handle or "(not set)"
                 cur_w = config.watermark_handle or "(not set)"
                 try:
@@ -1669,33 +1733,75 @@ def _build_bot():
                     except Exception:
                         pass
                 return
-            if action == "send_url":
+            if action_low == "send_url":
                 _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
                 try:
                     await context.bot.send_message(chat_id=chat_id, text="🔗 Please send a video URL (with or without time cut like 'Cut 0.25 to 1.00')\nTip: you can also use /url <link> or just paste the link.")
                 except Exception:
                     pass
                 return
-            if action == "back_menu":
+            if action_low == "back_menu":
                 await _send_control_center(chat_id, context.bot)
                 return
             # fallback
             return
 
+        # ponytail: robust job_id resolution — wizard, scan latest, then active_job fallback
         if not job_id:
-            aj = store.active_job()
-            if aj and aj.get("state") == AWAITING_APPROVAL:
-                job_id = aj["id"]
-            else:
+            _cb_log("job_id empty -> resolving")
+            resolved = None
+            # 1) wizard fallback (per-chat, most relevant after restart)
+            try:
                 wiz = _wizard_get(update.effective_chat.id) if update.effective_chat else None
                 if wiz and wiz.get("job_id"):
-                    job_id = wiz["job_id"]
-                else:
                     try:
-                        await update.callback_query.answer("No pending preview")
+                        wj = store.load(wiz["job_id"])
+                        if wj.get("state") in (AWAITING_APPROVAL, DOWNLOADED, MONTAGING, UPLOADING):
+                            resolved = wiz["job_id"]
+                            _cb_log(f"resolved via wizard {resolved} state={wj.get('state')}")
+                        else:
+                            _cb_log(f"wizard job state {wj.get('state')} not awaiting, ignore")
                     except Exception:
-                        pass
-                    return
+                        resolved = wiz["job_id"]
+                        _cb_log(f"resolved via wizard (load fail) {resolved}")
+            except Exception as e:
+                _cb_log(f"wizard resolve err {e}")
+            # 2) scan ALL jobs for latest AWAITING_APPROVAL sorted by updated_at/created_at descending (spec)
+            if not resolved:
+                try:
+                    all_jobs = store._all() if hasattr(store, "_all") else []
+                    cand = [j for j in all_jobs if j.get("state") == AWAITING_APPROVAL]
+                    if cand:
+                        cand.sort(key=lambda j: (j.get("updated_at", 0), j.get("created_at", 0), j.get("id","")), reverse=True)
+                        resolved = cand[0]["id"]
+                        _cb_log(f"resolved via scan ALL latest awaiting {resolved} state={cand[0].get('state')} total_cand={len(cand)}")
+                except Exception as e:
+                    _cb_log(f"scan err {e}")
+            # 3) active_job fallback (oldest queue order) if scan missed due to ACTIVE_STATES mismatch
+            if not resolved:
+                try:
+                    aj = store.active_job()
+                    if aj and aj.get("state") == AWAITING_APPROVAL:
+                        resolved = aj["id"]
+                        _cb_log(f"resolved via active_job {resolved} state={aj.get('state')}")
+                except Exception as e:
+                    _cb_log(f"active_job err {e}")
+            if resolved:
+                job_id = resolved
+            else:
+                _cb_log("no pending preview found after all fallbacks")
+                # ensure spinner dismissed
+                try:
+                    await update.callback_query.answer("No pending preview found — please send a new URL via /url")
+                except Exception:
+                    pass
+                # also send visible message as fallback (edit may be gone after restart)
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="No pending preview found — please send a new URL via /url")
+                except Exception:
+                    pass
+                return
+        # ensure spinner always dismissed
         try:
             await update.callback_query.answer()
         except Exception:
@@ -1703,11 +1809,35 @@ def _build_bot():
         # chat_id and qmsg already set above, but re-ensure
         chat_id = update.effective_chat.id if update.effective_chat else config.allowed_chat_id
         qmsg = update.callback_query.message
+        _cb_log(f"found job_id={job_id} proceeding action_low={action_low}")
 
-        # confirm/approve -> upload
-        if action in ("approve", "confirm"):
+        # confirm/approve -> upload (case-insensitive, handles confirm_to_upload etc)
+        if action_low.startswith("confirm") or action_low.startswith("approve"):
+            _cb_log(f"approve/confirm matched job_id={job_id}")
+            # verify job exists and log state before upload
+            try:
+                _j = store.load(job_id)
+                _cb_log(f"pre-upload state={_j.get('state')}")
+            except Exception as e:
+                _cb_log(f"pre-upload load fail {e}")
+                # try fallback scan again if job_id invalid
+                try:
+                    all_jobs = store._all() if hasattr(store, "_all") else []
+                    cand = [j for j in all_jobs if j.get("state") == AWAITING_APPROVAL]
+                    if cand:
+                        cand.sort(key=lambda j: (j.get("updated_at", 0), j.get("created_at", 0), j.get("id","")), reverse=True)
+                        job_id = cand[0]["id"]
+                        _cb_log(f"fallback to latest awaiting {job_id} after load fail")
+                    else:
+                        raise
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text="No pending preview found — please send a new URL via /url")
+                    except Exception:
+                        pass
+                    return
             asyncio.create_task(_do_upload(job_id, chat_id, context.bot, qmsg))
-        elif action == "reject":
+        elif action_low == "reject":
             try:
                 j = store.load(job_id)
                 store.set_state(j, CANCELLED)
@@ -1722,7 +1852,7 @@ def _build_bot():
                     pass
             registry.clear(job_id)
             _wizard_clear(chat_id)
-        elif action == "revert":
+        elif action_low == "revert":
             # spec: Use last URL or paste a new URL with two buttons
             try:
                 await qmsg.edit_text(msgs.WIZARD_REVERT_PROMPT)  # type: ignore
@@ -1749,7 +1879,7 @@ def _build_bot():
                 _wizard_set(chat_id, wiz)
             else:
                 _wizard_set(chat_id, {"step": WIZARD_STEP_AWAITING_URL, "url": None})
-        elif action == "use_last":
+        elif action_low == "use_last":
             # reuse last URL
             last = LAST_URL.get(chat_id)
             if not last:
@@ -1795,7 +1925,7 @@ def _build_bot():
                 await _wizard_send_thumbnail(chat_id, context.bot, probe, last, dur)
                 await _wizard_ask_template(chat_id, context.bot)
             asyncio.create_task(_reuse())
-        elif action == "new_url":
+        elif action_low == "new_url":
             try:
                 await qmsg.edit_text("🔗 Please paste a new URL")  # type: ignore
             except Exception:
@@ -1805,7 +1935,7 @@ def _build_bot():
                 await context.bot.send_message(chat_id=chat_id, text="🔗 Please paste a new URL (with optional cut like 'Cut 0.25 to 1.00')")
             except Exception:
                 pass
-        elif action == "rerun":
+        elif action_low == "rerun":
             try:
                 j = store.load(job_id)
                 store.update(j, awaiting_rerun=True)
@@ -1824,7 +1954,7 @@ def _build_bot():
             if wiz:
                 wiz["step"] = WIZARD_STEP_AWAITING_DESCRIPTION
                 _wizard_set(chat_id, wiz)
-        elif action == "cancel":
+        elif action_low == "cancel":
             try:
                 j = store.load(job_id)
                 if interruptible(j):
@@ -1839,6 +1969,7 @@ def _build_bot():
         else:
             try:
                 await update.callback_query.answer(f"Unknown action: {action}")
+                _cb_log(f"unknown action {action}")
             except Exception:
                 pass
 
