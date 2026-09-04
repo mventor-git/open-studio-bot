@@ -27,6 +27,7 @@ import asyncio
 import random
 import re
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -370,6 +371,8 @@ WIZARD: dict[int, dict] = {}
 LAST_URL: dict[int, str] = {}
 # PENDING_TEMPLATE holds template selected via control center (select_template_00/01) for next URL
 PENDING_TEMPLATE: dict[int, str] = {}
+# ponytail: dedup guard for preview trigger — per-chat last preview trigger ts (avoid double wizard trigger / duplicate job for same URL within 60s)
+_PREVIEW_INFLIGHT_TS: dict[int, float] = {}
 
 WIZARD_STEP_IDLE = "idle"
 WIZARD_STEP_AWAITING_URL = "awaiting_url"
@@ -772,6 +775,53 @@ def _build_bot():
             pass
         return 51
 
+    def _is_timeout_error(err: Exception) -> bool:
+        try:
+            msg = str(err).lower()
+            if "timed out" in msg or "timeout" in msg:
+                return True
+            if err.__class__.__name__.lower() in ("timedout", "timeouterror"):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _is_valid_preview_file(path: Path) -> bool:
+        try:
+            if not path.exists() or not path.is_file():
+                return False
+            sz = path.stat().st_size
+            if sz < 1024:
+                return False
+            ffprobe = config.ffmpeg_dir / "ffprobe.exe"
+            if ffprobe.exists():
+                try:
+                    import subprocess
+                    r = subprocess.run([str(ffprobe), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True, timeout=10)
+                    v = r.stdout.strip()
+                    if v:
+                        dur = float(v)
+                        if dur > 0:
+                            return True
+                except Exception:
+                    pass
+                # fallback: size > 100KB considered valid even if ffprobe fails
+                return sz > 100 * 1024
+            return sz > 0
+        except Exception:
+            return False
+
+    def _format_file_size(path: Path) -> str:
+        try:
+            sz = path.stat().st_size
+            mb = sz / (1024 * 1024)
+            if mb >= 1:
+                return f"{mb:.1f} MB"
+            kb = sz / 1024
+            return f"{kb:.0f} KB"
+        except Exception:
+            return "?"
+
     async def _send_preview(job_id: str, video_path: Path, template: str, chat_id: int, bot, status_msg):
         dur = _probe_duration(video_path)
         caption = msgs.PREVIEW_CAPTION.format(template=template.zfill(2), dur=dur)
@@ -781,25 +831,80 @@ def _build_bot():
             keyboard = kb.wizard_preview_keyboard(job_id)
         except Exception:
             keyboard = kb.approval_keyboard(job_id)
-        try:
-            with open(video_path, "rb") as f:
-                await bot.send_video(chat_id=chat_id, video=f, caption=caption, reply_markup=keyboard, supports_streaming=True)
-        except Exception as e:
+
+        # ponytail: timeout-aware send with explicit Telegram timeouts + single retry (5 MB video can need 15-30s)
+        async def _try_send_video():
             try:
                 with open(video_path, "rb") as f:
-                    await bot.send_document(chat_id=chat_id, document=f, filename=video_path.name, caption=caption, reply_markup=keyboard)
-            except Exception as e2:
-                await _edit(status_msg, msgs.ERROR_GENERIC.format(reason=f"preview send failed: {e} / {e2}"), chat_id, bot)
+                    await bot.send_video(chat_id=chat_id, video=f, caption=caption, reply_markup=keyboard, supports_streaming=True, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                return True, None
+            except Exception as e:
+                if _is_timeout_error(e):
+                    try:
+                        await asyncio.sleep(2)
+                        with open(video_path, "rb") as f:
+                            await bot.send_video(chat_id=chat_id, video=f, caption=caption, reply_markup=keyboard, supports_streaming=True, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                        return True, None
+                    except Exception as e2:
+                        e = e2
+                # fallback to document with same timeouts
                 try:
-                    store.set_state(store.load(job_id), FAILED)
+                    with open(video_path, "rb") as f:
+                        await bot.send_document(chat_id=chat_id, document=f, filename=video_path.name, caption=caption, reply_markup=keyboard, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                    return True, None
+                except Exception as e2:
+                    if _is_timeout_error(e2):
+                        try:
+                            await asyncio.sleep(2)
+                            with open(video_path, "rb") as f:
+                                await bot.send_document(chat_id=chat_id, document=f, filename=video_path.name, caption=caption, reply_markup=keyboard, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                            return True, None
+                        except Exception as e3:
+                            e2 = e3
+                    return False, f"{e} / {e2}"
+
+        ok, err = await _try_send_video()
+        if ok:
+            try:
+                await _edit(status_msg, msgs.AWAITING_APPROVAL, chat_id, bot)
+            except Exception:
+                pass
+            return True
+        # send failed — check if file itself is valid; if yes, keep AWAITING_APPROVAL (Telegram timeout, not job failure)
+        if _is_valid_preview_file(video_path):
+            size_str = _format_file_size(video_path)
+            is_timeout = err and ("timed out" in err.lower() or "timeout" in err.lower())
+            if is_timeout:
+                fallback = f"\u26a0\ufe0f Preview send timed out, but video is ready ({size_str}) \u2014 tap Confirm to publish or /preview to resend"
+            else:
+                fallback = f"\u26a0\ufe0f Preview send failed ({err}), but video is ready ({size_str}) \u2014 tap Confirm to publish or /preview to resend"
+            # try to send fallback with keyboard so Confirm still works
+            try:
+                await bot.send_message(chat_id=chat_id, text=fallback, reply_markup=keyboard)
+            except Exception:
+                try:
+                    await bot.send_message(chat_id=chat_id, text=fallback)
                 except Exception:
                     pass
-                return False
+            try:
+                await _edit(status_msg, fallback, chat_id, bot)
+            except Exception:
+                pass
+            # ensure job stays awaiting_approval
+            try:
+                j = store.load(job_id)
+                if j.get("state") != AWAITING_APPROVAL:
+                    store.set_state(j, AWAITING_APPROVAL)
+            except Exception:
+                pass
+            return False
+        # file missing/corrupt -> real failure
+        await _edit(status_msg, msgs.ERROR_GENERIC.format(reason=f"preview send failed: {err}"), chat_id, bot)
         try:
-            await _edit(status_msg, msgs.AWAITING_APPROVAL, chat_id, bot)
+            store.set_state(store.load(job_id), FAILED)
         except Exception:
             pass
-        return True
+        return False
 
     async def _do_upload(job_id: str, chat_id: int, bot, query_msg=None):
         # ponytail: robust upload entry — detailed logging + fallback scan
@@ -1102,6 +1207,32 @@ def _build_bot():
         if not wiz:
             return
         url = wiz["url"]
+        # ponytail: dedup guard — if same URL already has job in AWAITING_APPROVAL within 60s, don't create duplicate (hashtags step called twice etc)
+        try:
+            now = time.time()
+            last_ts = _PREVIEW_INFLIGHT_TS.get(chat_id, 0)
+            if now - last_ts < 60:
+                # check existing job for same URL awaiting approval
+                try:
+                    existing = [j for j in store._all() if j.get("url") == url and j.get("state") == AWAITING_APPROVAL and (now - float(j.get("updated_at", 0)) < 60)]
+                    if existing:
+                        return
+                except Exception:
+                    pass
+                # also if wizard already in awaiting_approval with valid job
+                if wiz.get("step") == WIZARD_STEP_AWAITING_APPROVAL and wiz.get("job_id"):
+                    try:
+                        j = store.load(wiz["job_id"])
+                        if j.get("state") == AWAITING_APPROVAL:
+                            return
+                    except Exception:
+                        pass
+                # debounce rapid double-trigger (e.g. hashtags sent twice)
+                if now - last_ts < 5:
+                    return
+            _PREVIEW_INFLIGHT_TS[chat_id] = now
+        except Exception:
+            pass
         template = wiz.get("template") or "00"
         # cut handling: if still None, pick random 30s
         cut_start = wiz.get("cut_start")
@@ -1392,31 +1523,84 @@ def _build_bot():
             wiz["preview_path"] = str(out_path)
             wiz["video_path"] = str(video_path)
             _wizard_set(chat_id, wiz)
-        # send preview with wizard keyboard
+        # send preview with wizard keyboard — timeout-aware (5 MB can need 15-30s; default 5-10s is too short)
         dur_wiz = _probe_duration(out_path)
         preview_caption = msgs.WIZARD_PREVIEW_CAPTION.format(template=template.zfill(2), duration=dur_wiz)
         try:
             keyboard = kb.wizard_preview_keyboard(job_id)
         except Exception:
             keyboard = kb.approval_keyboard(job_id)
-        try:
-            with open(out_path, "rb") as f:
-                await bot.send_video(chat_id=chat_id, video=f, caption=preview_caption, reply_markup=keyboard, supports_streaming=True)
-        except Exception as e:
+
+        async def _wiz_try_send():
             try:
                 with open(out_path, "rb") as f:
-                    await bot.send_document(chat_id=chat_id, document=f, filename=out_path.name, caption=preview_caption, reply_markup=keyboard)
-            except Exception as e2:
-                await _edit(status_msg, msgs.ERROR_GENERIC.format(reason=f"preview send failed: {e} / {e2}"), chat_id, bot)
+                    await bot.send_video(chat_id=chat_id, video=f, caption=preview_caption, reply_markup=keyboard, supports_streaming=True, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                return True, None
+            except Exception as e:
+                if _is_timeout_error(e):
+                    try:
+                        await asyncio.sleep(2)
+                        with open(out_path, "rb") as f:
+                            await bot.send_video(chat_id=chat_id, video=f, caption=preview_caption, reply_markup=keyboard, supports_streaming=True, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                        return True, None
+                    except Exception as e_retry:
+                        e = e_retry
                 try:
-                    store.set_state(store.load(job_id), FAILED)
+                    with open(out_path, "rb") as f:
+                        await bot.send_document(chat_id=chat_id, document=f, filename=out_path.name, caption=preview_caption, reply_markup=keyboard, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                    return True, None
+                except Exception as e2:
+                    if _is_timeout_error(e2):
+                        try:
+                            await asyncio.sleep(2)
+                            with open(out_path, "rb") as f:
+                                await bot.send_document(chat_id=chat_id, document=f, filename=out_path.name, caption=preview_caption, reply_markup=keyboard, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
+                            return True, None
+                        except Exception as e3:
+                            e2 = e3
+                    return False, f"{e} / {e2}"
+
+        wiz_ok, wiz_err = await _wiz_try_send()
+        if wiz_ok:
+            try:
+                await _edit(status_msg, msgs.WIZARD_PREVIEW_SENT, chat_id, bot)
+            except Exception:
+                pass
+            return
+        # preview send failed — keep AWAITING_APPROVAL if file valid (Telegram timeout, not job failure)
+        if _is_valid_preview_file(out_path):
+            size_str = _format_file_size(out_path)
+            is_timeout = wiz_err and ("timed out" in wiz_err.lower() or "timeout" in wiz_err.lower())
+            if is_timeout:
+                fallback = f"\u26a0\ufe0f Preview send timed out, but video is ready ({size_str}) \u2014 tap Confirm to publish or /preview to resend"
+            else:
+                fallback = f"\u26a0\ufe0f Preview send failed ({wiz_err}), but video is ready ({size_str}) \u2014 tap Confirm to publish or /preview to resend"
+            try:
+                await bot.send_message(chat_id=chat_id, text=fallback, reply_markup=keyboard)
+            except Exception:
+                try:
+                    await bot.send_message(chat_id=chat_id, text=fallback)
                 except Exception:
                     pass
-                return
+            try:
+                await _edit(status_msg, fallback, chat_id, bot)
+            except Exception:
+                pass
+            # ensure still awaiting_approval
+            try:
+                j = store.load(job_id)
+                if j.get("state") != AWAITING_APPROVAL:
+                    store.set_state(j, AWAITING_APPROVAL)
+            except Exception:
+                pass
+            return
+        # file missing/corrupt -> real failure
+        await _edit(status_msg, msgs.ERROR_GENERIC.format(reason=f"preview send failed: {wiz_err}"), chat_id, bot)
         try:
-            await _edit(status_msg, msgs.WIZARD_PREVIEW_SENT, chat_id, bot)
+            store.set_state(store.load(job_id), FAILED)
         except Exception:
             pass
+        return
 
     async def _prompt_handle_if_empty(chat_id: int, bot):
         # prompt user to set handle if empty (instead of hardcoded fallback)
@@ -2232,11 +2416,43 @@ def _build_bot():
             await _wizard_ask_hashtags(chat_id, context.bot)
             return
         if wiz and wiz.get("step") == WIZARD_STEP_AWAITING_HASHTAGS:
+            # ponytail: dedup — hashtags step must trigger preview only once (avoid duplicate preview on rapid double send)
+            if wiz.get("_preview_triggered"):
+                return
+            try:
+                now2 = time.time()
+                last2 = _PREVIEW_INFLIGHT_TS.get(chat_id, 0)
+                if now2 - last2 < 60:
+                    # if already awaiting approval for same url, ignore duplicate hashtags message
+                    if wiz.get("step") != WIZARD_STEP_AWAITING_HASHTAGS:
+                        return
+                    # if preview already triggered for this wizard run, dedup (second check inside time window)
+                    if wiz.get("_preview_triggered"):
+                        return
+                # also check existing awaiting job for same url
+                try:
+                    url_check = wiz.get("url")
+                    if url_check:
+                        existing2 = [j for j in store._all() if j.get("url") == url_check and j.get("state") == AWAITING_APPROVAL and (now2 - float(j.get("updated_at", 0)) < 60)]
+                        if existing2:
+                            wiz["step"] = WIZARD_STEP_AWAITING_APPROVAL
+                            wiz["_preview_triggered"] = True
+                            _wizard_set(chat_id, wiz)
+                            try:
+                                await update.message.reply_text(f"\u26a0\ufe0f Preview already in progress for this URL (job {existing2[0]['id']}) — check above or tap Confirm")
+                            except Exception:
+                                pass
+                            return
+                except Exception:
+                    pass
+            except Exception:
+                pass
             tags = parse_hashtags(text)
             # also handle case where user sends /skip or empty -> no hashtags
             if text.strip().lower() in ("/skip", "skip", ""):
                 tags = []
             wiz["hashtags"] = tags
+            wiz["_preview_triggered"] = True
             _wizard_set(chat_id, wiz)
             try:
                 if tags:
@@ -2401,6 +2617,36 @@ def _build_bot():
             except Exception:
                 pass
 
+    async def preview_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        chat_id = update.effective_chat.id
+        try:
+            all_jobs = store._all() if hasattr(store, "_all") else []
+            cand = [j for j in all_jobs if j.get("state") == AWAITING_APPROVAL]
+            if not cand:
+                await update.message.reply_text("No pending preview — send a URL via /url")
+                return
+            cand.sort(key=lambda j: (j.get("updated_at", 0), j.get("created_at", 0), j.get("id", "")), reverse=True)
+            job = cand[0]
+            job_id = job["id"]
+            tiktok_path = Path(job.get("result", {}).get("tiktok_path") or job.get("tiktok_path") or "")
+            if not tiktok_path or not tiktok_path.exists():
+                tiktok_path = config.jobs_dir / "media" / f"{job_id}_tiktok.mp4"
+            if not tiktok_path.exists():
+                await update.message.reply_text(f"Preview file missing for {job_id} — please resend URL")
+                return
+            if not _is_valid_preview_file(tiktok_path):
+                await update.message.reply_text(f"Preview file corrupt for {job_id} — please resend URL")
+                return
+            status_msg = await update.message.reply_text(f"\U0001f501 Resending preview for {job_id}...")
+            await _send_preview(job_id, tiktok_path, job.get("template") or "00", chat_id, context.bot, status_msg)
+        except Exception as e:
+            try:
+                await update.message.reply_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+            except Exception:
+                pass
+
     # --- T7 daily cookie verification loop ---
     async def _daily_cookie_loop(bot):
         # interval configurable COOKIE_CHECK_HOURS, default 24h
@@ -2434,6 +2680,7 @@ def _build_bot():
                 BotCommand("url", "🔗 Send video URL"),
                 BotCommand("templates", "🎨 Templates list"),
                 BotCommand("logs", "📊 Jobs log (CSV)"),
+                BotCommand("preview", "🔁 Resend pending preview"),
                 BotCommand("set_handle", "⚙️ Set @handle (watermark + TikTok)"),
                 BotCommand("set_tiktok", "⚙️ Set TikTok handle alias"),
                 BotCommand("status", "📊 Job/wizard status"),
@@ -2491,6 +2738,7 @@ def _build_bot():
     app.add_handler(CommandHandler("handle", handle_cmd))
     app.add_handler(CommandHandler("tiktok", set_tiktok_cmd))
     app.add_handler(CommandHandler("logs", logs_cmd))
+    app.add_handler(CommandHandler("preview", preview_cmd))
     app.add_handler(CommandHandler("retry", retry_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
