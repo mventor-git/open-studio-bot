@@ -333,6 +333,47 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
         return False
 
 
+def _type_caption_with_real_hashtags(page, description: str) -> None:
+    """Type caption so hashtags become real clickable TikTok entities.
+
+    insert_text dumps one IME blob - TikTok's DraftJS editor never sees per-key
+    events, so '#tag' stays plain text (no textExtra -> no hashtag page -> 0 views).
+    Fix: insert_text the plain text, then for each #tag: insert_text '#tag', press
+    a REAL Space key. Editor's hashtag detector commits on keypress space.
+    """
+    import re as _re
+    # tokens: hashtags vs plain text, keep order
+    tokens = _re.findall(r"#[^\s#]+|\S+|\s+", description)
+    has_tags = any(t.startswith("#") for t in tokens)
+    if not has_tags:
+        page.keyboard.insert_text(description)
+        return
+    # strategy: type everything with insert_text EXCEPT hashtags; hashtags get
+    # insert_text("#tag") followed by real keyboard.press("Space")
+    buf = ""
+    prev_was_tag = False
+    for tok in tokens:
+        if tok.startswith("#"):
+            if buf:
+                page.keyboard.insert_text(buf)
+                buf = ""
+                time.sleep(0.15)
+            page.keyboard.insert_text(tok)
+            time.sleep(0.25)
+            page.keyboard.press("Space")  # real key event -> entity commit
+            time.sleep(0.25)
+            prev_was_tag = True
+        elif tok.strip():
+            buf += tok
+            prev_was_tag = False
+        elif prev_was_tag:
+            prev_was_tag = False  # whitespace right after tag: Space already pressed, skip
+        else:
+            buf += tok
+    if buf:
+        page.keyboard.insert_text(buf)
+
+
 def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict:
     """Upload video to TikTok Studio — handles Joyride Skip + scroll fix + confirm modal.
 
@@ -518,7 +559,8 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
             time.sleep(0.3)
             page.keyboard.press("Backspace")
             time.sleep(0.3)
-            page.keyboard.insert_text(description)
+            # T8: type hashtags with real key events so they become clickable entities
+            _type_caption_with_real_hashtags(page, description)
             time.sleep(0.8)
             val = page.evaluate("""() => {
                 const el=document.querySelector('[contenteditable="true"]');
