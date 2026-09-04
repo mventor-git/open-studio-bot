@@ -24,10 +24,31 @@ def _ytdlp_cmd(args: list[str]) -> list[str]:
     return [YTDLP, *args]
 
 
-def download(url: str, output_dir: Path, job_id: str, platform: str = "") -> dict[str, Any]:
+def _fmt_secs(sec: int) -> str:
+    """Seconds -> M:SS or H:MM:SS for yt-dlp --download-sections."""
+    sec = int(sec)
+    if sec >= 3600:
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        s = sec % 60
+        return f"{h}:{m:02d}:{s:02d}"
+    m = sec // 60
+    s = sec % 60
+    return f"{m}:{s:02d}"
+
+
+def download(
+    url: str,
+    output_dir: Path,
+    job_id: str,
+    platform: str = "",
+    start: int | None = None,
+    end: int | None = None,
+) -> dict[str, Any]:
     """Download capped at config.max_resolution. Returns {ok, video_path, error}.
 
     Killable mid-run via interrupt registry (terminate -> escalate kill).
+    If start/end provided, uses yt-dlp --download-sections "*start-end" (proven for qaid 26:19-27:10).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -50,6 +71,13 @@ def download(url: str, output_dir: Path, job_id: str, platform: str = "") -> dic
             "-o", str(output_dir / "%(id)s.%(ext)s"),
             url,
         ]
+        # time cut via yt-dlp sections: "*0:25-1:00" or "*26:19-27:10" or "*11:42-inf"
+        if start is not None:
+            if end is not None:
+                sect = f"*{_fmt_secs(start)}-{_fmt_secs(end)}"
+            else:
+                sect = f"*{_fmt_secs(start)}-inf"
+            args += ["--download-sections", sect]
         if cookiefile is not None:
             args += ["--cookies", str(cookiefile)]
         # ffmpeg/ffprobe live in our bundled tools dir — yt-dlp needs both
@@ -92,7 +120,12 @@ def download(url: str, output_dir: Path, job_id: str, platform: str = "") -> dic
     # Attempt 1: no cookies. Attempt 2 (login-walled platforms): Waterfox cookies.
     ok, info = _attempt(None)
     if not ok and platform in COOKIE_PLATFORMS:
-        tmpdir = copy_cookies_to_temp()
+        # _copy_cookies is copy_cookies_to_temp imported as alias; fallback to direct import if needed
+        try:
+            tmpdir = _copy_cookies()
+        except NameError:
+            from core.verifier import copy_cookies_to_temp as _cc
+            tmpdir = _cc()
         if tmpdir is not None:
             try:
                 ok, info2 = _attempt(tmpdir / "cookies.sqlite")
