@@ -35,10 +35,10 @@ python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/
   --title "Example Title" --subtitle "Example Subtitle" --style card
 
 # Template 00 — clean, no card (overlay transparent unless watermark)
-python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/media/test_00.mp4 \
+python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/media/out_00.mp4 \
   --title "" --subtitle "" --style card
 # no watermark variant
-python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/media/test_00_nowm.mp4 \
+python scripts/tiktok_vertical_fast.py --source jobs/media/input.mp4 --out jobs/media/out_00_nowm.mp4 \
   --title "" --subtitle "" --no-watermark
 ```
 

@@ -11,7 +11,7 @@ Usage:
       [--font <ttf>] [--gap <s>]
 
 Example:
-  python scripts/template01.py --source jobs/media/test_source.mp4 \
+  python scripts/template01.py --source jobs/media/input.mp4 \
       --text jobs/media/caption_text.txt --out jobs/media/template01.mp4
 """
 from __future__ import annotations

@@ -2,8 +2,8 @@ import sys, json
 sys.path.insert(0, r"C:\Users\Mventor\tg-montage")
 from agents.opencode_client import run_job
 
-SRC = r"C:\Users\Mventor\tg-montage\jobs\media\test_source.mp4"
-OUT = r"C:\Users\Mventor\tg-montage\jobs\media\montage_test.mp4"
+SRC = r"C:\Users\Mventor\tg-montage\jobs\media\input.mp4"
+OUT = r"C:\Users\Mventor\tg-montage\jobs\media\out_tiktok.mp4"
 OM_REPO = r"C:\Users\Mventor\OpenMontage"
 FFMPEG = r"C:\Users\Mventor\tg-montage\tools\ffmpeg-9.0.1-essentials_build\bin"
 

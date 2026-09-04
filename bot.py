@@ -1445,14 +1445,7 @@ def _build_bot():
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=msgs.TEMPLATES_TEXT, reply_markup=kb.templates_list_keyboard())
             except Exception:
                 pass
-        # optionally send preview frames if available
-        try:
-            # try sending photos of templates if files exist
-            for pth in [config.jobs_dir / "media" / "test_00.mp4", config.jobs_dir / "media" / "qaid_tiktok.mp4"]:
-                # we cannot send mp4 as photo, but could note location; skip to keep minimal
-                pass
-        except Exception:
-            pass
+        # Preview is generated on demand from the user's own video after they send URL — no hardcoded test files.
 
     async def url_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:

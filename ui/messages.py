@@ -171,7 +171,7 @@ DOCS_TEXT = (
     "• <code>core/jobs.py</code> — atomic JSON store, platform regex, ACTIVE_STATES includes awaiting_approval\n"
     "• <code>core/verifier.py</code> / <code>core/downloader.py</code> — probe + download\n"
     "• <code>scripts/tiktok_vertical_fast.py</code> + <code>scripts/caption_card.py</code> — card + handle\n"
-    "• <code>jobs/media/test_00.mp4</code> vs <code>jobs/media/qaid_tiktok.mp4</code> — preview samples for 00 (clean) vs 01 (card)\n\n"
+    "• <code>jobs/media/*_tiktok.mp4</code> — preview renders (generated on demand from your video)\n\n"
     "Local docs are under <code>docs/</code> — bot can send them as documents on tap."
 )
 
@@ -182,13 +182,13 @@ TEMPLATES_TEXT = (
     "• Clean vertical 1080x1920, blurred 16:9 fill (gblur sigma=18) + sharp center, <b>no caption card, no burned text</b>\n"
     "• Watermark @mventor top-left (unless --no-watermark / no watermark) — watermark only, card is empty\n"
     "• Description → only TikTok post text, never burned into pixels. If empty, post desc empty (+ auto #hashtags)\n"
-    "• For clean reposts, no branding overlay. Preview: <code>jobs/media/test_00.mp4</code>\n"
+    "• For clean reposts, no branding overlay. Preview: generated on demand from your video (<code>jobs/media/*_tiktok.mp4</code>)\n"
     "• Render: <code>tiktok_vertical_fast --title \"\" --subtitle \"\"</code> → transparent overlay check\n\n"
     "<b>Template 01 — 9:16 TikTok with Card</b>\n"
     "• Vertical 1080x1920 + Majalla card (0.94 wide, 1.95× tall, rounded 22, shadow, gold accent #EAB308 right edge RTL)\n"
     "• Fonts Majalla Bold 0.052H / Majalla 0.040H via arabic_reshaper+bidi, @mventor watermark Segoe UI 0.028 small top-left\n"
     "• Description burned as title/subtitle card AND used as post description (split on “ - ”)\n"
-    "• For branded Arabic content. Preview: <code>jobs/media/qaid_tiktok.mp4</code> / <code>qaid_seg_tiktok.mp4</code>\n"
+    "• For branded Arabic content. Preview: generated on demand from your video\n"
     "• Render: <code>publish_template01 --template 01 --title … --subtitle …</code> + upload نشر→النشر الآن\n\n"
     "Select below 👇 — bot replies ✅ Template 0x saved."
 )

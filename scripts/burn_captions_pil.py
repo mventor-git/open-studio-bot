@@ -126,9 +126,9 @@ def burn(video: Path, text_file: Path, out: Path, font_path: Path) -> Path:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--video", default=str(config.jobs_dir / "media" / "montage_test.mp4"))
+    ap.add_argument("--video", default=str(config.jobs_dir / "media" / "input.mp4"))
     ap.add_argument("--text", default=str(config.jobs_dir / "media" / "caption_text.txt"))
-    ap.add_argument("--out", default=str(config.jobs_dir / "media" / "montage_captioned.mp4"))
+    ap.add_argument("--out", default=str(config.jobs_dir / "media" / "out_captioned.mp4"))
     ap.add_argument("--font", default=str(DEFAULT_FONT))
     args = ap.parse_args()
     out = burn(Path(args.video), Path(args.text), Path(args.out), Path(args.font))
