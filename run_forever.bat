@@ -2,7 +2,7 @@
 title tg-montage - forever (master)
 echo Starting tg-montage forever services...
 echo  - opencode serve (Claude-Free) will auto-restart
-echo  - Telegram bot (videosforall19) will auto-restart
+echo  - Telegram bot (videosforall19) will auto-restart (includes T7 daily cookie check every 24h via bot.py loop)
 echo.
 
 start "tg-montage-opencode" cmd /c "C:\Users\Mventor\tg-montage\run_opencode_forever.bat"

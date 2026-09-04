@@ -42,7 +42,9 @@ def probe_duration(path: Path) -> float:
         return 0.0
 
 
-def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str) -> Path:
+def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str | None = None) -> Path:
+    if handle is None:
+        handle = config.watermark_handle
     """Render ONE transparent overlay PNG with caption card + watermark.
 
     Template 00: title == "" and subtitle == "" => no card is drawn, only watermark if handle != "".
@@ -63,7 +65,9 @@ def make_overlay(title: str, subtitle: str, style: str, accent: str, handle: str
     return tmp
 
 
-def vertical_fast(source: Path, out: Path, title: str, subtitle: str, style: str, accent: str, handle: str):
+def vertical_fast(source: Path, out: Path, title: str, subtitle: str, style: str, accent: str, handle: str | None = None):
+    if handle is None:
+        handle = config.watermark_handle
     overlay = make_overlay(title, subtitle, style, accent, handle)
     dur = probe_duration(source)
     if dur <= 0:
@@ -103,9 +107,11 @@ def main() -> int:
     ap.add_argument("--subtitle", default="صفات القائد")
     ap.add_argument("--style", default="card", choices=["card", "pill", "banner"])
     ap.add_argument("--accent", default="#EAB308")
-    ap.add_argument("--handle", default="@mventor")
+    ap.add_argument("--handle", default=None, help="watermark handle, defaults to WATERMARK_HANDLE env")
     ap.add_argument("--no-watermark", action="store_true")
     args = ap.parse_args()
+    if args.handle is None:
+        args.handle = config.watermark_handle
     handle = "" if args.no_watermark else args.handle
     vertical_fast(Path(args.source), Path(args.out), args.title, args.subtitle, args.style, args.accent, handle)
     return 0

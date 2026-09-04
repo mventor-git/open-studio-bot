@@ -325,12 +325,12 @@ def parse_message(text: str) -> dict:
 
     Returns dict with url, start, end, template, title, subtitle, caption, raw_cut, handle, description, hashtags.
     Template 00: no burned card — title/subtitle forced empty, caption is raw Description: if any else "".
-    Watermark: default @mventor unless text contains no watermark / --no-watermark.
+    Watermark: default WATERMARK_HANDLE unless text contains no watermark / --no-watermark.
     """
     url = _extract_url(text)
     start, end, raw_cut = parse_time_cut(text)
     template = parse_template(text)
-    handle = "" if _has_no_watermark(text) else "@mventor"
+    handle = "" if _has_no_watermark(text) else config.watermark_handle
     # hashtags extraction: find #tags; if none but user might have typed bare hashtags, fallback handled by caller
     hashtags = extract_hashtags_from_text(text)
     # if no #tags found but the text after Description: contains bare words that caller considers hashtags, we leave empty here and wizard step will normalize separately
@@ -811,6 +811,28 @@ def _build_bot():
             desc = caption or f"{title} - {subtitle}".strip(" -")
         if desc and "#" not in desc:
             desc += " #حضارة #قيادة #تاريخ"
+        # T7: lazy cookie check before upload (24h daily + every upload)
+        try:
+            from core.cookies import verify_tiktok_session
+            chk = await asyncio.to_thread(verify_tiktok_session)
+            if not chk.get("ok"):
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msgs.COOKIE_EXPIRED)
+                    if chat_id != config.allowed_chat_id:
+                        try: await bot.send_message(chat_id=config.allowed_chat_id, text=msgs.COOKIE_EXPIRED)
+                        except: pass
+                except Exception:
+                    pass
+                try:
+                    j = store.load(job_id)
+                    store.set_state(j, FAILED)
+                    store.update(j, result={"error": chk.get("reason"), "cookie_fail": True})
+                except Exception:
+                    pass
+                # do not attempt upload if cookies invalid
+                return
+        except Exception:
+            pass
         try:
             from scripts.publish_template01 import upload_tiktok
             res = await asyncio.to_thread(upload_tiktok, tiktok_path, desc, False)
@@ -827,17 +849,26 @@ def _build_bot():
                 pass
             return
         if not res.get("ok"):
+            # T7: cookie fail vs generic upload fail mapping
+            err = res.get("error","unknown")
+            is_cookie = res.get("cookie_fail") or "session expired" in str(err).lower() or "re-login" in str(err).lower()
+            msg_text = msgs.COOKIE_EXPIRED if is_cookie else msgs.error_message("upload", err)
             try:
-                await bot.send_message(chat_id=chat_id, text=msgs.ERROR_GENERIC.format(reason=f"upload failed: {res.get('error','unknown')}"))
+                await bot.send_message(chat_id=chat_id, text=msg_text)
+                if is_cookie and chat_id != config.allowed_chat_id:
+                    try: await bot.send_message(chat_id=config.allowed_chat_id, text=msg_text)
+                    except: pass
             except Exception:
                 pass
             try:
-                store.set_state(store.load(job_id), FAILED)
+                j = store.load(job_id)
+                store.set_state(j, FAILED)
+                store.update(j, result={"error": err, "cookie_fail": bool(is_cookie)})
             except Exception:
                 pass
             registry.clear(job_id)
             return
-        tiktok_url = res.get("url") or "https://www.tiktok.com/@videosforall19"
+        tiktok_url = res.get("url") or f"https://www.tiktok.com/{config.tiktok_handle.lstrip('@')}"
         try:
             await bot.send_message(chat_id=chat_id, text=msgs.POSTED.format(link=tiktok_url))
         except Exception:
@@ -1013,7 +1044,7 @@ def _build_bot():
         else:
             t_title = ""
             t_sub = ""
-        handle = "@mventor"
+        handle = config.watermark_handle
         # Determine start/end for download
         start = cut_start
         end = cut_end
@@ -1049,7 +1080,7 @@ def _build_bot():
         subtitle = parsed["subtitle"]
         caption = parsed["caption"]
         template = parsed["template"]
-        handle = parsed.get("handle", "@mventor")
+        handle = parsed.get("handle", config.watermark_handle)
         platform = job.get("platform", "") or JobStore.detect_platform(url) or ""
         async def edit(text: str):
             await _edit(status_msg, text, chat_id, bot)
@@ -1076,19 +1107,38 @@ def _build_bot():
                 pass
             return
         if not v.get("ok"):
-            await edit(msgs.VERIFY_FAILED.format(reason=v.get("error", "unknown")))
+            # T7: cookie fail maps to dedicated Telegram message
+            if v.get("cookie_fail"):
+                await edit(msgs.COOKIE_EXPIRED)
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msgs.COOKIE_EXPIRED)
+                except Exception:
+                    pass
+                # also notify ALLOWED_CHAT_ID if different
+                try:
+                    if chat_id != config.allowed_chat_id:
+                        await bot.send_message(chat_id=config.allowed_chat_id, text=msgs.COOKIE_EXPIRED)
+                except Exception:
+                    pass
+            else:
+                await edit(msgs.VERIFY_FAILED.format(reason=v.get("error", "unknown")))
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msgs.error_message("verify", v.get("error","unknown")))
+                except Exception:
+                    pass
             try:
                 store.set_state(store.load(job_id), FAILED)
                 j = store.load(job_id)
-                store.update(j, result={"error": v.get("error")})
+                store.update(j, result={"error": v.get("error"), "cookie_fail": v.get("cookie_fail")})
             except Exception:
                 pass
             registry.clear(job_id)
-            # wizard: inform invalid and ask new URL
-            try:
-                await bot.send_message(chat_id=chat_id, text=msgs.INVALID_URL)
-            except Exception:
-                pass
+            # wizard: inform invalid and ask new URL (only if not cookie fail, already sent)
+            if not v.get("cookie_fail"):
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msgs.INVALID_URL)
+                except Exception:
+                    pass
             # reset wizard to awaiting_url
             wiz = _wizard_get(chat_id)
             if wiz:
@@ -1137,9 +1187,16 @@ def _build_bot():
                 pass
             return
         if not d.get("ok"):
-            await edit(msgs.DOWNLOAD_FAILED.format(reason=d.get("error", "unknown")))
+            # T7: map download fail to user-facing bilingual message
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.error_message("download", d.get("error","unknown")))
+            except Exception:
+                pass
+            await edit(msgs.error_message("download", d.get("error", "unknown")))
             try:
                 store.set_state(store.load(job_id), FAILED)
+                j = store.load(job_id)
+                store.update(j, result={"error": d.get("error")})
             except Exception:
                 pass
             registry.clear(job_id)
@@ -1186,9 +1243,15 @@ def _build_bot():
                 pass
             return
         if not ok:
-            await edit(msgs.ERROR_GENERIC.format(reason=f"montage failed: {err}"))
+            try:
+                await bot.send_message(chat_id=chat_id, text=msgs.error_message("montage", err or "render produced no file"))
+            except Exception:
+                pass
+            await edit(msgs.error_message("montage", err or "render produced no file"))
             try:
                 store.set_state(store.load(job_id), FAILED)
+                j = store.load(job_id)
+                store.update(j, result={"error": err})
             except Exception:
                 pass
             registry.clear(job_id)
@@ -1554,7 +1617,7 @@ def _build_bot():
                     new_parsed["handle"] = ""
                 try:
                     j = store.load(aj["id"])
-                    store.update(j, title=new_parsed["title"], subtitle=new_parsed["subtitle"], caption=new_parsed["caption"], template=new_parsed["template"], handle=new_parsed.get("handle", "@mventor"), awaiting_rerun=False)
+                    store.update(j, title=new_parsed["title"], subtitle=new_parsed["subtitle"], caption=new_parsed["caption"], template=new_parsed["template"], handle=new_parsed.get("handle", config.watermark_handle), awaiting_rerun=False)
                 except Exception:
                     pass
                 status_msg = await update.message.reply_text(f"🔁 Rerunning montage Template {new_parsed['template']}...")
@@ -1576,7 +1639,7 @@ def _build_bot():
                     out_path = config.jobs_dir / "media" / f"{aj['id']}_tiktok.mp4"
                     try:
                         from scripts.tiktok_vertical_fast import vertical_fast
-                        await asyncio.to_thread(vertical_fast, Path(video_path), out_path, new_parsed["title"], new_parsed["subtitle"], "card", "#EAB308", new_parsed.get("handle", "@mventor"))
+                        await asyncio.to_thread(vertical_fast, Path(video_path), out_path, new_parsed["title"], new_parsed["subtitle"], "card", "#EAB308", new_parsed.get("handle", config.watermark_handle))
                         ok = out_path.exists() and out_path.stat().st_size > 0
                         err = None if ok else "render produced no file"
                     except Exception as e:
@@ -1733,12 +1796,161 @@ def _build_bot():
         # template will be asked regardless; if user typed template explicitly, we could auto-store? For now ask again; step will handle.
         # For backward compat single-shot jobs without wizard, also create job immediately? Wizard replaces that flow.
 
-    # build application
-    app = Application.builder().token(config.bot_token).build()
+    async def set_handle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        text = (update.message.text or "").strip()
+        # extract arg after command
+        arg = ""
+        parts = text.split(None, 1)
+        if len(parts) > 1:
+            arg = parts[1].strip().split()[0]
+        elif context.args:
+            arg = (context.args[0] or "").strip()
+        if not arg:
+            cur = config.tiktok_handle
+            wm = config.watermark_handle
+            try:
+                await update.message.reply_text(msgs.HANDLE_CURRENT.format(tiktok=cur, watermark=wm))
+                await update.message.reply_text("Usage: /set_handle @myhandle  — sets both TikTok and watermark handles")
+            except Exception:
+                pass
+            return
+        raw = arg.strip()
+        # normalize
+        if not raw.startswith("@"):
+            raw = "@" + raw.lstrip("@")
+        body = raw[1:]
+        if not body or len(body) < 2 or len(body) > 30 or not re.match(r"^[A-Za-z0-9._]+$", body):
+            try:
+                await update.message.reply_text(msgs.HANDLE_INVALID)
+            except Exception:
+                pass
+            return
+        try:
+            from config import persist_handle
+            new_h = persist_handle(raw)
+            await update.message.reply_text(msgs.HANDLE_SET.format(handle=new_h))
+        except Exception as e:
+            try:
+                await update.message.reply_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+            except Exception:
+                pass
+
+    async def retry_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        chat_id = update.effective_chat.id
+        # lazy re-verify cookies first
+        try:
+            from core.cookies import verify_tiktok_session
+            chk = await asyncio.to_thread(verify_tiktok_session)
+            if not chk.get("ok"):
+                try:
+                    await update.message.reply_text(msgs.COOKIE_EXPIRED + f"\n{chk.get('reason','')}")
+                except Exception:
+                    pass
+                return
+            else:
+                try:
+                    await update.message.reply_text(f"✅ TikTok session OK ({chk.get('cookie_count',0)} cookies) — you can now send a new URL or reuse last")
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                await update.message.reply_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+            except Exception:
+                pass
+            return
+        # if last URL exists, offer reuse
+        last = LAST_URL.get(chat_id)
+        if last:
+            try:
+                await update.message.reply_text(f"♻️ Last URL: {last}\nSend it again or type /url to start")
+            except Exception:
+                pass
+        # also if there's a failed job with cookie_fail, allow re-upload if preview exists
+        try:
+            aj = store.active_job()
+            if aj and aj.get("state") == AWAITING_APPROVAL:
+                try:
+                    await update.message.reply_text("▶️ Found pending preview — use Confirm to Upload to retry upload")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def handle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # alias to set_handle display
+        await set_handle_cmd(update, context)
+
+    # --- T7 daily cookie verification loop ---
+    async def _daily_cookie_loop(bot):
+        # interval configurable COOKIE_CHECK_HOURS, default 24h
+        interval = max(1, int(getattr(config, "cookie_check_hours", 24))) * 3600
+        # ponytail: simple asyncio loop, no extra process
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            try:
+                from core.cookies import verify_tiktok_session
+                chk = await asyncio.to_thread(verify_tiktok_session)
+                if not chk.get("ok"):
+                    try:
+                        await bot.send_message(chat_id=config.allowed_chat_id, text=msgs.COOKIE_DAILY_ALERT + f"\n{chk.get('reason','')}")
+                    except Exception:
+                        pass
+                # also optional success logging? skip to avoid spam
+            except Exception:
+                pass
+
+    async def post_init(app):
+        # immediate check at startup (proactive before next upload)
+        try:
+            from core.cookies import verify_tiktok_session
+            chk = await asyncio.to_thread(verify_tiktok_session)
+            if not chk.get("ok"):
+                try:
+                    await app.bot.send_message(chat_id=config.allowed_chat_id, text=msgs.COOKIE_DAILY_ALERT + f"\n{chk.get('reason','')}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # launch daily loop as background task
+        try:
+            app.create_task(_daily_cookie_loop(app.bot))
+        except Exception:
+            # fallback to asyncio.create_task
+            try:
+                asyncio.create_task(_daily_cookie_loop(app.bot))
+            except Exception:
+                pass
+
+    # build application with post_init for daily cookie check
+    try:
+        builder = Application.builder().token(config.bot_token)
+        # post_init available in PTB 21+
+        try:
+            builder = builder.post_init(post_init)
+        except Exception:
+            pass
+        app = builder.build()
+    except Exception:
+        app = Application.builder().token(config.bot_token).build()
+        # try attach post_init manually
+        try:
+            app.post_init = post_init  # type: ignore
+        except Exception:
+            pass
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("url", url_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("interrupt", interrupt_cmd))
+    app.add_handler(CommandHandler("set_handle", set_handle_cmd))
+    app.add_handler(CommandHandler("handle", handle_cmd))
+    app.add_handler(CommandHandler("retry", retry_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app

@@ -89,10 +89,45 @@ def _find_cookie_db() -> Path | None:
     return None
 
 
+def _cookie_health_from_db(src: Path) -> tuple[bool, str, int, bool]:
+    """Health check helper for upload path: <5 or no sessionid => fail."""
+    tmp = Path(tempfile.gettempdir()) / f"tpl01_health_{int(time.time()*1000)}.sqlite"
+    try:
+        s_con = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=5)
+        d_con = sqlite3.connect(str(tmp))
+        s_con.backup(d_con)
+        d_con.close(); s_con.close()
+    except Exception:
+        try: shutil.copy2(str(src), str(tmp))
+        except Exception as e: return False, f"copy fail {e}", 0, False
+    con = sqlite3.connect(str(tmp))
+    cur = con.cursor()
+    try:
+        cur.execute("SELECT name FROM moz_cookies WHERE host LIKE '%tiktok.com%'")
+        nms = [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        con.close()
+        try: tmp.unlink()
+        except: pass
+        return False, str(e), 0, False
+    con.close()
+    try: tmp.unlink()
+    except: pass
+    cnt = len(nms)
+    has_sid = "sessionid" in nms
+    if cnt < 5: return False, f"cookies truncated: only {cnt} tiktok cookies (need >=5)", cnt, has_sid
+    if not has_sid: return False, "cookies missing sessionid", cnt, has_sid
+    return True, f"cookies OK {cnt}", cnt, has_sid
+
+
 def extract_cookies() -> list[dict]:
     src = _find_cookie_db()
     if not src:
-        raise SystemExit(f"no cookie DB found (tried {COOKIES_TMP} and {COOKIES_WATERFOX})")
+        raise SystemExit(f"no cookie DB found (tried {COOKIES_TMP} and {COOKIES_WATERFOX}) — ❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL / ❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry")
+    ok, reason, cnt, has_sid = _cookie_health_from_db(src)
+    if not ok:
+        log(f"cookie health fail: {reason}")
+        raise SystemExit(f"cookie fail: {reason} — ❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL / ❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry")
     tmp = Path(tempfile.gettempdir()) / f"tpl01_{int(time.time()*1000)}.sqlite"
     try:
         s_con = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=5)
@@ -113,7 +148,7 @@ def extract_cookies() -> list[dict]:
         tmp.unlink()
     except Exception:
         pass
-    log(f"cookies {len(rows)} tiktok rows from {src.name}")
+    log(f"cookies {len(rows)} tiktok rows from {src.name} (health {cnt} has_sid={has_sid})")
     cookies = []
     for name, value, host, path, expiry, isSecure, isHttpOnly, sameSite in rows:
         same_site = None
@@ -304,13 +339,27 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
     Proven flow from retry6:
       scroll+force click نشر (y1488>1080 off-screen) -> wait modal -> force click النشر الآن
       -> wait POST /web/project/post/v1/ 200 -> content shows 1 video under review
+    T7: detects cookie/session expiry (truncated cookies, missing sessionid, login redirect)
+    and returns {ok:False, cookie_fail:True} for Telegram mapping.
     """
     sz = video.stat().st_size
     log(f"upload start {video} {sz/1024/1024:.2f} MB desc='{description[:60]}'")
-    cookies = extract_cookies()
+    try:
+        cookies = extract_cookies()
+    except SystemExit as e:
+        msg = str(e)
+        log(f"cookie extract fail {msg}")
+        return {"ok": False, "error": msg, "cookie_fail": True, "url": None}
     names = [c["name"] for c in cookies]
-    log(f"cookies {len(cookies)} names={names[:10]}")
-    assert "sessionid" in names, "sessionid missing — check Waterfox login videosforall19"
+    log(f"cookies {len(cookies)} names={names[:10]} handle={config.tiktok_handle} watermark={config.watermark_handle}")
+    if "sessionid" not in names:
+        msg = "sessionid missing — ❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL / ❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry"
+        log(msg)
+        return {"ok": False, "error": msg, "cookie_fail": True, "url": None}
+    if len(cookies) < 5:
+        msg = f"cookies truncated {len(cookies)} — ❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL / ❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry"
+        log(msg)
+        return {"ok": False, "error": msg, "cookie_fail": True, "url": None}
 
     from playwright.sync_api import sync_playwright
 
@@ -366,6 +415,26 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
             log(f"goto fail {e}")
         time.sleep(2)
         screenshot(page, "template01_01_initial.png")
+        # T7: detect login redirect immediately after goto
+        try:
+            cur_url = page.url or ""
+            body_probe = ""
+            try:
+                body_probe = page.content()[:8000].lower()
+            except Exception:
+                body_probe = ""
+            if "login" in cur_url.lower() or "passport" in cur_url.lower() or ("log in" in body_probe and "tiktokstudio" not in body_probe[:2000]):
+                log(f"login redirect detected url={cur_url} body_has_login={'log in' in body_probe}")
+                screenshot(page, "template01_login_redirect.png")
+                browser.close()
+                return {"ok": False, "error": "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry", "cookie_fail": True, "url": None}
+            # also check for explicit session expired banner
+            if "session expired" in body_probe or "انتهت الجلسة" in body_probe:
+                log("session expired banner detected")
+                browser.close()
+                return {"ok": False, "error": "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry", "cookie_fail": True, "url": None}
+        except Exception as e:
+            log(f"login check fail {e}")
 
         # file input
         try:
@@ -635,7 +704,7 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="output 1080x1920 mp4 (default jobs/media/<stem>_tiktok.mp4)")
     ap.add_argument("--style", default="card", choices=["card","pill","banner"])
     ap.add_argument("--accent", default="#EAB308")
-    ap.add_argument("--handle", default="@mventor", help="@handle watermark, use 'none' to disable")
+    ap.add_argument("--handle", default=None, help="@handle watermark, use 'none' to disable (defaults to WATERMARK_HANDLE env)")
     ap.add_argument("--no-watermark", action="store_true", help="disable @mventor watermark (same as --handle none)")
     ap.add_argument("--no-upload", action="store_true", help="render only, skip upload")
     ap.add_argument("--dry-run", action="store_true", help="render + verify upload code without actually uploading")
@@ -663,6 +732,8 @@ def main() -> int:
 
     # Step 1: render 9:16  (template 00 => empty title/subtitle => transparent overlay, no card burned)
     log(f"Step 1/2: render {W}x{H} vertical template={tmpl} — source={source} title='{args.title}' subtitle='{args.subtitle}' out={out}")
+    if args.handle is None:
+        args.handle = config.watermark_handle
     t0=time.time()
     handle = "" if (args.no_watermark or args.handle=="none") else args.handle
     try:

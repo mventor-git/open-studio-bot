@@ -25,7 +25,22 @@ def _load_dotenv() -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def _load_handle_json() -> None:
+    """Optional persisted handle override from jobs/handle.json (survives .env edits)."""
+    try:
+        jf = REPO_ROOT / "jobs" / "handle.json"
+        if jf.exists():
+            import json as _j
+            data = _j.loads(jf.read_text(encoding="utf-8"))
+            for k in ("TIKTOK_HANDLE", "WATERMARK_HANDLE"):
+                if k in data and data[k]:
+                    os.environ.setdefault(k, str(data[k]).strip())
+    except Exception:
+        pass
+
+
 _load_dotenv()
+_load_handle_json()
 
 
 @dataclass
@@ -63,6 +78,11 @@ class Config:
         default_factory=lambda: int(os.environ.get("MAX_DURATION_SECONDS", "600"))
     )
 
+    # Handles (T7)
+    tiktok_handle: str = field(default_factory=lambda: os.environ.get("TIKTOK_HANDLE", "@videosforall19"))
+    watermark_handle: str = field(default_factory=lambda: os.environ.get("WATERMARK_HANDLE", "@mventor"))
+    cookie_check_hours: int = field(default_factory=lambda: int(os.environ.get("COOKIE_CHECK_HOURS", "24")))
+
     # Bundled ffmpeg/ffprobe (portable install under tools/)
     ffmpeg_dir: Path = field(default_factory=lambda: REPO_ROOT / "tools" / "ffmpeg-9.0.1-essentials_build" / "bin")
 
@@ -89,3 +109,62 @@ def check_config() -> list[str]:
     except OSError as exc:
         problems.append(f"cannot create jobs dir {config.jobs_dir}: {exc}")
     return problems
+
+
+def _normalize_handle(handle: str) -> str:
+    h = (handle or "").strip()
+    if not h:
+        return ""
+    if not h.startswith("@"):
+        h = "@" + h.lstrip("@")
+    return h
+
+
+def _update_env_file(key: str, value: str) -> None:
+    env_file = REPO_ROOT / ".env"
+    lines: list[str] = []
+    found = False
+    if env_file.exists():
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            new_lines.append(line)
+            continue
+        k, _, _ = line.partition("=")
+        if k.strip() == key:
+            new_lines.append(f"{key}={value}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def persist_handle(handle: str) -> str:
+    """Persist new handle to .env + jobs/handle.json and update live config.
+    Returns normalized handle."""
+    norm = _normalize_handle(handle)
+    if not norm:
+        raise ValueError("handle required, e.g. @videosforall19")
+    # update live config + env
+    config.tiktok_handle = norm
+    config.watermark_handle = norm
+    os.environ["TIKTOK_HANDLE"] = norm
+    os.environ["WATERMARK_HANDLE"] = norm
+    try:
+        _update_env_file("TIKTOK_HANDLE", norm)
+        _update_env_file("WATERMARK_HANDLE", norm)
+    except Exception:
+        pass
+    # also persist to jobs/handle.json (always, cheap fallback)
+    try:
+        import json as _j
+        jf = REPO_ROOT / "jobs" / "handle.json"
+        jf.parent.mkdir(parents=True, exist_ok=True)
+        jf.write_text(_j.dumps({"TIKTOK_HANDLE": norm, "WATERMARK_HANDLE": norm}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return norm

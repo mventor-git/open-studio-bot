@@ -92,3 +92,43 @@ WIZARD_CONFIRM_BUTTON = "✅ Confirm to Upload"
 WIZARD_REVERT_BUTTON = "❌ Revert"
 WIZARD_USE_LAST_BUTTON = "Use Last URL"
 WIZARD_NEW_URL_BUTTON = "New URL"
+
+# --- T7: error taxonomy + cookie/handles ---
+COOKIE_EXPIRED = (
+    "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n"
+    "❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry"
+)
+COOKIE_DAILY_ALERT = (
+    "⚠️ Daily check: TikTok cookies expiring/invalid — please re-login in Waterfox\n"
+    "⚠️ فحص يومي: جلسة تيك توك منتهية أو غير صالحة — سجل دخولك مرة أخرى في Waterfox"
+)
+COOKIE_EXPIRED_SHORT = "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL"
+
+DOWNLOAD_FAIL_MSG = "❌ Download failed: {reason}\n❌ فشل التحميل: {reason}"
+MONTAGE_FAIL_MSG = "❌ Montage failed: {reason}\n❌ فشل المونتاج: {reason}"
+CAPTION_FAIL_MSG = "❌ Caption failed: {reason}\n❌ فشل كتابة الوصف: {reason}"
+UPLOAD_FAIL_MSG = "❌ Upload failed: {reason}\n❌ فشل الرفع: {reason}"
+UPLOAD_FAILED = UPLOAD_FAIL_MSG  # alias for compat
+
+HANDLE_SET = "Handle set to {handle} — future watermarks and TikTok checks will use it"
+HANDLE_INVALID = "❌ Invalid handle — send like /set_handle @myhandle (letters, numbers, _ . allowed)"
+HANDLE_CURRENT = "Current handles — TikTok: {tiktok}  Watermark: {watermark}"
+
+# helper to map automation errors to user-facing messages (T7)
+def error_message(kind: str, reason: str = "") -> str:
+    """Map kind to bilingual user-facing message. kind in: cookie, download, montage, caption, upload, verify."""
+    r = reason or "unknown"
+    kind = (kind or "").lower()
+    if kind == "cookie":
+        return COOKIE_EXPIRED
+    if kind == "download":
+        return DOWNLOAD_FAIL_MSG.format(reason=r)
+    if kind == "montage":
+        return MONTAGE_FAIL_MSG.format(reason=r)
+    if kind == "caption":
+        return CAPTION_FAIL_MSG.format(reason=r)
+    if kind == "upload":
+        return UPLOAD_FAIL_MSG.format(reason=r)
+    if kind == "verify":
+        return VERIFY_FAILED.format(reason=r)
+    return ERROR_GENERIC.format(reason=r)
