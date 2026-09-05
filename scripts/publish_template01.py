@@ -218,8 +218,42 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
 
     clicked = False
     start = time.time()
+    gate_closed = False
     while time.time() - start < timeout:
         elapsed = int(time.time() - start)
+        # restriction gate: 'Content may be restricted / Violation reason'
+        # modal blocks the publish-confirm modal (duplicate video flag).
+        # Close via X, re-click Post, continue polling.
+        try:
+            gate = page.evaluate('''() => {
+                const body = document.body.innerText || '';
+                if (!/content may be restricted/i.test(body) && !/violation reason/i.test(body)) return 'none';
+                const btns = Array.from(document.querySelectorAll('button'));
+                for (const b of btns) {
+                    const t = (b.innerText || '').trim();
+                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                    if (((t === '' && b.offsetParent) || aria.includes('close')) && !/replace/i.test(t)) {
+                        b.click();
+                        return 'closed-x';
+                    }
+                }
+                return 'found-no-x';
+            }''')
+            if gate in ('closed-x', 'found-no-x'):
+                if gate == 'found-no-x':
+                    try: page.keyboard.press('Escape')
+                    except Exception: pass
+                log(f'restriction gate {gate} - re-clicking Post')
+                gate_closed = True
+                time.sleep(2)
+                try:
+                    page.evaluate('''() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('PUBLISHBTN')||t==='Post';}); if(b) b.click(); }'''.replace('PUBLISHBTN', 'نشر'))
+                except Exception:
+                    pass
+                time.sleep(2)
+                continue
+        except Exception as e:
+            log(f'gate check fail {e}')
         try:
             info = page.evaluate("""() => {
                 const bodyText=document.body.innerText||'';
@@ -807,17 +841,25 @@ def upload_tiktok(video: Path, description: str, headless: bool = False, locale:
                     text:(b.innerText||'').trim().slice(0,60), disabled:b.disabled, aria:b.getAttribute('aria-disabled'), visible:!!b.offsetParent
                 })).filter(b=>b.text.includes('نشر')||b.text.trim()==='Post').slice(0,5)""")
                 log(f"[{elapsed}s] Post {json.dumps(infos, ensure_ascii=False)}")
-                for sel in ['button:has-text("نشر")','button:text-is("Post")']:
-                    cnt=page.locator(sel).count()
-                    if cnt>0:
-                        loc=page.locator(sel).first
-                        en=loc.is_enabled()
-                        try: aria=loc.get_attribute("aria-disabled")
-                        except Exception: aria=None
-                        log(f"  {sel} en={en} aria={aria}")
-                        if aria=="false" or (aria is None and en):
-                            post_btn=loc
-                            break
+                # exact text match via evaluate: ':has-text(Post)' hits sidebar
+                # 'Posts'; ':text-is(Post)' misses nested markup. Evaluate is exact.
+                found = page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    for (const b of btns) {
+                        const t = (b.innerText || '').trim();
+                        if (!(t.includes('نشر') || t === 'Post')) continue;
+                        const r = b.getBoundingClientRect();
+                        if (r.width < 20 || r.height < 8 || !b.offsetParent) continue;
+                        return {text: t.slice(0, 30), disabled: !!b.disabled,
+                                aria: b.getAttribute('aria-disabled')};
+                    }
+                    return null;
+                }""")
+                if found:
+                    log(f"  post btn text={found.get('text')} disabled={found.get('disabled')} aria={found.get('aria')}")
+                    if found.get("aria") == "false" or (found.get("aria") is None and not found.get("disabled")):
+                        post_btn = True  # marker; actual click uses evaluate below
+                        break
                 if post_btn: break
             except Exception as e:
                 log(f"wait Post fail {e}")
@@ -836,14 +878,10 @@ def upload_tiktok(video: Path, description: str, headless: bool = False, locale:
         except Exception: pass
         time.sleep(1.5)
         screenshot(page, "template01_08_after_window_scroll.png")
-        try: post_btn.scroll_into_view_if_needed(timeout=5000)
-        except Exception:
-            page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(b) b.scrollIntoView({block:'center'}); }""")
+        page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(b) b.scrollIntoView({block:'center'}); }""")
         time.sleep(0.8)
         screenshot(page, "template01_09_after_scroll.png")
         try:
-            bbox=post_btn.bounding_box()
-            log(f"bbox {bbox}")
             click_ok=page.evaluate("""() => {
                 const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';});
                 if(!b) return {ok:false};
@@ -854,13 +892,14 @@ def upload_tiktok(video: Path, description: str, headless: bool = False, locale:
         except Exception as e:
             log(f"bbox fail {e}")
 
-        log("Click Post force:true")
+        log("Click Post via evaluate exact-match")
         clicked=False
-        try: post_btn.click(force=True, timeout=10000); clicked=True; log("Post force click ok")
+        try:
+            ok = page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(!b) return false; b.click(); return true; }""")
+            clicked = bool(ok)
+            log(f"evaluate click ok={clicked}")
         except Exception as e:
-            log(f"force fail {e}")
-            try: page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(b) b.click(); }"""); clicked=True; log("evaluate click ok")
-            except Exception as e2: log(f"eval fail {e2}")
+            log(f"eval click fail {e}")
         time.sleep(1.5)
         screenshot(page, "template01_10_after_post_click.png")
 
