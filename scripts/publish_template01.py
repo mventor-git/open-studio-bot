@@ -347,55 +347,60 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     import re as _re
 
     def _click_dropdown_item(tag_name: str) -> bool:
-        """Click the dropdown list item matching tag_name. Returns True if clicked."""
-        try:
-            # broad selectors covering listbox/option, mention, suggest, popup containers
-            items = page.evaluate("""() => {
-                const sels = [
-                    '[role="listbox"] [role="option"]',
-                    '[role="option"]',
-                    '[class*="suggestion"] [class*="item"]',
-                    '[class*="dropdown"] [class*="item"]',
-                    '[class*="mention"] [class*="item"]',
-                    '[class*="popup"] [class*="item"]',
-                    'ul li[class*="tag"]',
-                    'div[class*="Option"]'
-                ];
-                const out = [];
-                for (const sel of sels) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) {
-                            out.push({
-                                text: (el.innerText || "").trim().slice(0, 80),
-                                x: r.x + r.width / 2,
-                                y: r.y + r.height / 2
-                            });
-                        }
-                    }
-                }
-                return out;
-            }""")
-        except Exception:
-            return False
-        if not items:
-            return False
-        # prefer item whose text matches the tag (with or without #)
+        """Click the FIRST item in the suggestion list (wanted tag is always first).
+
+        Uses Playwright locators (not raw coordinates): atomic click with
+        auto-scroll + actionability checks, so list animation/scroll
+        between measure and click cannot miss.
+        """
+        selectors = [
+            '[role="listbox"] [role="option"]',
+            '[role="option"]',
+            '[class*="suggestion"] [class*="item"]',
+            '[class*="dropdown"] [class*="item"]',
+            '[class*="mention"] [class*="item"]',
+            '[class*="popup"] [class*="item"]',
+            'ul li[class*="tag"]',
+        ]
         needle = tag_name.lstrip("#").strip().lower()
-        best = None
-        for it in items:
-            t = (it.get("text") or "").lower()
-            if needle and needle in t:
-                best = it
-                break
-        if best is None:
-            best = items[0]  # fallback: first visible item
-        try:
-            page.mouse.click(best["x"], best["y"])
-            time.sleep(0.5)
-            return True
-        except Exception:
-            return False
+        # pass 1: first item whose text matches the tag
+        if needle:
+            for sel in selectors:
+                try:
+                    loc = page.locator(sel)
+                    n = loc.count()
+                    for i in range(min(n, 5)):
+                        try:
+                            it = loc.nth(i)
+                            if not it.is_visible():
+                                continue
+                            t = (it.inner_text(timeout=1000) or "").lower()
+                            if needle in t:
+                                it.click(timeout=3000)
+                                time.sleep(0.5)
+                                return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        # pass 2: the wanted tag is always first -> click first visible item
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                n = loc.count()
+                for i in range(min(n, 3)):
+                    try:
+                        it = loc.nth(i)
+                        if not it.is_visible():
+                            continue
+                        it.click(timeout=3000)
+                        time.sleep(0.5)
+                        return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return False
 
     def _dropdown_visible() -> bool:
         try:
@@ -426,7 +431,17 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 page.keyboard.type(tok, delay=80)
             except Exception:
                 page.keyboard.insert_text(tok)
-            time.sleep(0.8)  # wait for list to render
+            # poll for the list to actually appear (up to 6s) instead of
+            # a fixed sleep that races the dropdown render
+            list_ready = False
+            t0 = time.time()
+            while time.time() - t0 < 6:
+                if _dropdown_visible():
+                    list_ready = True
+                    break
+                time.sleep(0.4)
+            if not list_ready:
+                time.sleep(0.6)  # one last grace period for slow render
             # click the matching item from the list
             clicked = _click_dropdown_item(tok)
             if not clicked and _dropdown_visible():
@@ -436,6 +451,17 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
             elif not clicked:
                 page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
+            # refocus editor: the dropdown click steals focus, without this
+            # the next token is typed into nowhere and silently lost
+            try:
+                ed = page.locator('[contenteditable="true"]').first
+                if ed.count() > 0:
+                    ed.click(timeout=2000)
+                    time.sleep(0.15)
+                    page.keyboard.press("End")
+                    time.sleep(0.15)
+            except Exception:
+                pass
             if not first_tag_done:
                 try:
                     screenshot(page, "template01_06b_hashtag_selected.png")
