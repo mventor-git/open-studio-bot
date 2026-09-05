@@ -442,8 +442,13 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 time.sleep(0.4)
             if not list_ready:
                 time.sleep(0.6)  # one last grace period for slow render
-            # click the matching item from the list
+            # click the matching item from the list, then Enter to
+            # confirm the selection (click alone only highlights)
             clicked = _click_dropdown_item(tok)
+            if clicked:
+                time.sleep(0.3)
+                page.keyboard.press("Enter")  # confirm highlighted suggestion -> entity
+                time.sleep(0.5)
             if not clicked and _dropdown_visible():
                 # dropdown visible but click missed: Enter selects highlighted item
                 page.keyboard.press("Enter")
