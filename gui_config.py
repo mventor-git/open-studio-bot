@@ -217,6 +217,9 @@ class Retro8BitGUI:
         self._pix_btn(wf_row, "VERIFY!", self.verify_waterfox).pack(side="left", padx=4)
         self.wf_status = tk.Label(body, text="> Press VERIFY! to check Waterfox + cookies", bg=C_BG, fg=C1, font=PIXEL_SMALL, anchor="w")
         self.wf_status.pack(fill="x", padx=4, pady=2)
+        # T11.4: last known-good cookie banner
+        self.cookie_ok_label = tk.Label(body, text="> Last cookie OK: never — log in to TikTok in Waterfox", bg=C_BG, fg=C1, font=PIXEL_SMALL, anchor="w")
+        self.cookie_ok_label.pack(fill="x", padx=4, pady=0)
 
         self._pix_section(body, " [ TEMPLATES ] ")
         self.tmpl00 = tk.BooleanVar(value=True)
@@ -302,6 +305,31 @@ class Retro8BitGUI:
         y = max(0, self.root.winfo_y() + dy)
         self.root.geometry(f"+{x}+{y}")
 
+    def _refresh_cookie_banner(self):
+        """T11.4: show last known-good cookie time + live DB age."""
+        try:
+            import datetime as _dt
+            import sys as _sys
+            _sys.path.insert(0, str(REPO))
+            from core.cookies import last_cookie_ok, cookies_db_mtime
+            last_ok = last_cookie_ok()
+            mtime = cookies_db_mtime()
+            now = __import__("time").time()
+            if last_ok:
+                ago = _dt.timedelta(seconds=int(now - last_ok))
+                txt = f"> Last cookie OK: {_dt.datetime.fromtimestamp(last_ok).strftime('%Y-%m-%d %H:%M')} ({ago} ago)"
+                fg = C1
+            else:
+                txt = "> Last cookie OK: never — log in to TikTok in Waterfox, then VERIFY!"
+                fg = "#8b0000"
+            if mtime:
+                db_age = _dt.timedelta(seconds=int(now - mtime))
+                txt += f" | cookies.sqlite {db_age} old"
+            self.cookie_ok_label.config(text=txt, fg=fg)
+            self._log(f"> {txt}")
+        except Exception as e:
+            self._log(f"> cookie banner fail: {e}")
+
     def _run_initial_checks(self):
         # Check Waterfox status
         status_code, msg = verify_waterfox_status()
@@ -326,6 +354,9 @@ class Retro8BitGUI:
             self._log("⚠️ TikTok handle not set — use /set_handle in Telegram")
         if not env.get("WATERMARK_HANDLE"):
             self._log("⚠️ Watermark handle not set — use /set_handle in Telegram")
+
+        # T11.4: cookie last-OK banner
+        self._refresh_cookie_banner()
 
     def verify_waterfox(self):
         beep()
@@ -359,6 +390,7 @@ class Retro8BitGUI:
         else:
             self.wf_status.config(text=f"✗ {profile.name} — 0 cookies — NOT LOGGED IN", fg="#8b0000")
             self._log("> WF FAIL: 0 cookies")
+        self._refresh_cookie_banner()
 
     def save_all(self):
         updates = {

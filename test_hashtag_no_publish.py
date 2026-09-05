@@ -26,6 +26,8 @@ STUDIO_URL = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center&tab
 
 def main() -> int:
     caption = sys.argv[1] if len(sys.argv) > 1 else "test caption #zoo #history #test"
+    locale = sys.argv[2] if len(sys.argv) > 2 else "ar-EG"
+    print(f"locale: {locale}", flush=True)
     video = Path("jobs/media/test-hashtag-tiktok.mp4")
     if not video.exists():
         print(f"missing video: {video}")
@@ -41,7 +43,7 @@ def main() -> int:
             timeout=30000,
         )
         context = browser.new_context(
-            viewport={"width": 1920, "height": 1080}, locale="ar-EG"
+            viewport={"width": 1920, "height": 1080}, locale=locale
         )
         try:
             context.grant_permissions(

@@ -9,11 +9,115 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import config
+
+COOKIE_OK_STAMP = Path(__file__).resolve().parent.parent / "logs" / ".cookie_ok"
+COOKIE_WAIT_S = 600  # T11: auto-wait window for user re-login in Waterfox
+COOKIE_WAIT_POLL_S = 15
+
+
+def live_cookies_db() -> Path | None:
+    """Path to the LIVE Waterfox cookies.sqlite (not a temp copy).
+
+    Prefers *.default-release* profiles, falls back to any */cookies.sqlite.
+    """
+    try:
+        base = Path(config.waterfox_profile)
+    except Exception:
+        return None
+    if not base.exists():
+        return None
+    if (base / "cookies.sqlite").exists():
+        return base / "cookies.sqlite"
+    try:
+        for child in sorted(base.glob("*.default-release*")):
+            if (child / "cookies.sqlite").exists():
+                return child / "cookies.sqlite"
+        for child in sorted(base.glob("*")):
+            if (child / "cookies.sqlite").exists():
+                return child / "cookies.sqlite"
+    except Exception:
+        return None
+    return None
+
+
+def cookies_db_mtime() -> float:
+    """mtime of live cookies.sqlite, 0 if missing. Re-login rewrites it."""
+    try:
+        db = live_cookies_db()
+        if db is None:
+            return 0.0
+        return db.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def stamp_cookie_ok() -> None:
+    """Record last known-good cookie time (for GUI banner + /refresh_cookies)."""
+    try:
+        COOKIE_OK_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        COOKIE_OK_STAMP.write_text(str(time.time()), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def last_cookie_ok() -> float:
+    """Epoch of last known-good cookie check, 0 if never."""
+    try:
+        if COOKIE_OK_STAMP.exists():
+            return float(COOKIE_OK_STAMP.read_text(encoding="utf-8").strip() or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def wait_for_fresh_cookies(
+    timeout_s: int = COOKIE_WAIT_S,
+    poll_s: int = COOKIE_WAIT_POLL_S,
+    baseline_mtime: float | None = None,
+    stop_flag: Callable[[], bool] | None = None,
+) -> tuple[bool, str]:
+    """T11: wait until Waterfox cookies look fresh, then return.
+
+    Fresh = live DB mtime newer than baseline AND quick_cookie_check passes.
+    stop_flag() True aborts early (wired to /interrupt). Blocking; run in thread.
+    """
+    if baseline_mtime is None:
+        baseline_mtime = cookies_db_mtime()
+    deadline = time.time() + max(0, timeout_s)
+    last_reason = "timeout waiting for fresh Waterfox login"
+    while time.time() < deadline:
+        try:
+            if stop_flag is not None and stop_flag():
+                return False, "cancelled by user (/interrupt)"
+        except Exception:
+            pass
+        try:
+            mtime = cookies_db_mtime()
+            if mtime > baseline_mtime + 1:
+                ok, reason = quick_cookie_check()
+                if ok:
+                    stamp_cookie_ok()
+                    return True, f"fresh cookies detected ({reason})"
+                last_reason = f"cookies DB changed but unhealthy: {reason}"
+        except Exception as e:
+            last_reason = str(e)[:120]
+        # sleep in small chunks so stop_flag is responsive
+        slept = 0.0
+        while slept < poll_s and time.time() < deadline:
+            time.sleep(1.0)
+            slept += 1.0
+            try:
+                if stop_flag is not None and stop_flag():
+                    return False, "cancelled by user (/interrupt)"
+            except Exception:
+                pass
+    return False, last_reason
 
 
 def _copy_cookies_temp() -> Path | None:
@@ -183,10 +287,12 @@ def verify_tiktok_session() -> dict[str, Any]:
                     continue
                 # success if handle found (means logged in as that user) or isUpload present
                 if handle_in_body:
+                    stamp_cookie_ok()
                     return {"ok": True, "reason": f"Studio check OK: handle @{handle} found, cookies={info['count']}", "cookie_count": info["count"], "has_sessionid": True, "studio_check": "handle_match", "error": None}
                 if has_upload:
                     # isUpload:true present but handle not found — maybe still ok, but strict spec says check uniqueId matches TIKTOK_HANDLE
                     # Treat as OK if isUpload true and not login wall; but warn if handle mismatch?
+                    stamp_cookie_ok()
                     return {"ok": True, "reason": f"Studio check OK: isUpload:true, cookies={info['count']}", "cookie_count": info["count"], "has_sessionid": True, "studio_check": "isUpload_true", "error": None}
                 # if neither, treat as fail
                 last_error = f"Studio page missing isUpload/handle check (handle @{handle} not found, isUpload not true)"

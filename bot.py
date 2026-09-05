@@ -906,6 +906,42 @@ def _build_bot():
             pass
         return False
 
+    async def _await_fresh_cookies(chat_id: int, bot, job_id: str, timeout: int = 600) -> bool:
+        """T11: ask user to re-login in Waterfox, wait for fresh cookies.
+
+        Sends bilingual wait notice, polls cookies.sqlite mtime + health in a
+        thread (interrupt-aware via /interrupt). Returns True if fresh.
+        """
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=("🦊 TikTok session expired — re-login in Waterfox at tiktok.com\n"
+                      "أعد تسجيل الدخول في Waterfox على tiktok.com\n"
+                      f"Waiting up to {timeout // 60} min for fresh cookies — /interrupt to cancel.\n"
+                      "بانتظار الكوكيز الجديدة — /interrupt للإلغاء."),
+            )
+        except Exception:
+            pass
+        try:
+            from core.cookies import cookies_db_mtime, wait_for_fresh_cookies
+            baseline = await asyncio.to_thread(cookies_db_mtime)
+            stop = lambda: registry.is_interrupted(job_id)
+            ok, reason = await asyncio.to_thread(
+                wait_for_fresh_cookies, timeout, 15, baseline, stop
+            )
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(f"✅ Fresh cookies detected — retrying upload.\nتم رصد كوكيز جديدة — إعادة المحاولة."
+                          if ok else
+                          f"⚠️ Still no fresh cookies ({reason}).\nلا توجد كوكيز جديدة — أرسل /refresh_cookies بعد تسجيل الدخول."),
+                )
+            except Exception:
+                pass
+            return ok
+        except Exception:
+            return False
+
     async def _do_upload(job_id: str, chat_id: int, bot, query_msg=None):
         # ponytail: robust upload entry — detailed logging + fallback scan
         def _ulog(msg: str):
@@ -1008,9 +1044,13 @@ def _build_bot():
         if desc and "#" not in desc:
             desc += " #حضارة #قيادة #تاريخ"
         # T7: lazy cookie check before upload (24h daily + every upload)
+        # T11: on fail, wait for fresh login + re-verify once (no manual /retry)
         try:
             from core.cookies import verify_tiktok_session
             chk = await asyncio.to_thread(verify_tiktok_session)
+            if not chk.get("ok"):
+                if not registry.is_interrupted(job_id) and await _await_fresh_cookies(chat_id, bot, job_id):
+                    chk = await asyncio.to_thread(verify_tiktok_session)
             if not chk.get("ok"):
                 try:
                     await bot.send_message(chat_id=chat_id, text=msgs.COOKIE_EXPIRED)
@@ -1046,8 +1086,18 @@ def _build_bot():
             return
         if not res.get("ok"):
             # T7: cookie fail vs generic upload fail mapping
+            # T11: on cookie fail, wait for fresh login + retry upload once
             err = res.get("error","unknown")
             is_cookie = res.get("cookie_fail") or "session expired" in str(err).lower() or "re-login" in str(err).lower()
+            if is_cookie and not registry.is_interrupted(job_id):
+                if await _await_fresh_cookies(chat_id, bot, job_id):
+                    try:
+                        from scripts.publish_template01 import upload_tiktok as _retry_upload
+                        res = await asyncio.to_thread(_retry_upload, tiktok_path, desc, False)
+                    except Exception as e:
+                        res = {"ok": False, "error": str(e), "url": None}
+                    err = res.get("error","unknown")
+                    is_cookie = res.get("cookie_fail") or "session expired" in str(err).lower() or "re-login" in str(err).lower()
             msg_text = msgs.COOKIE_EXPIRED if is_cookie else msgs.error_message("upload", err)
             try:
                 await bot.send_message(chat_id=chat_id, text=msg_text)
@@ -2671,6 +2721,80 @@ def _build_bot():
             except Exception:
                 pass
 
+    async def refresh_cookies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """T11.2: re-extract Waterfox cookies, report status, auto-retry failed job."""
+        if update.effective_chat and update.effective_chat.id != config.allowed_chat_id:
+            return
+        chat_id = update.effective_chat.id
+        try:
+            await update.message.reply_text("🦊 Re-checking Waterfox cookies...")
+        except Exception:
+            pass
+        try:
+            from core.cookies import verify_tiktok_session, last_cookie_ok
+            import datetime as _dt
+            chk = await asyncio.to_thread(verify_tiktok_session)
+            last_ok = await asyncio.to_thread(last_cookie_ok)
+            last_ok_str = (_dt.datetime.fromtimestamp(last_ok).strftime("%Y-%m-%d %H:%M") if last_ok else "never")
+            if chk.get("ok"):
+                try:
+                    await update.message.reply_text(
+                        f"✅ Cookies OK ({chk.get('cookie_count', 0)} cookies, sessionid present)\n"
+                        f"Last known-good: {last_ok_str}"
+                    )
+                except Exception:
+                    pass
+                # auto-retry latest cookie-failed job with existing preview
+                try:
+                    all_jobs = store._all() if hasattr(store, "_all") else []
+                    cand = [j for j in all_jobs
+                            if j.get("state") == FAILED
+                            and isinstance(j.get("result"), dict)
+                            and j["result"].get("cookie_fail")]
+                    cand.sort(key=lambda j: (j.get("updated_at", 0), 0), reverse=True)
+                    if cand:
+                        job = cand[0]
+                        tiktok_path = Path(job.get("result", {}).get("tiktok_path") or job.get("tiktok_path") or "")
+                        if not tiktok_path or not tiktok_path.exists():
+                            tiktok_path = config.jobs_dir / "media" / f"{job['id']}_tiktok.mp4"
+                        if tiktok_path.exists() and _is_valid_preview_file(tiktok_path):
+                            try:
+                                await update.message.reply_text(f"▶️ Retrying failed upload {job['id']}...")
+                            except Exception:
+                                pass
+                            try:
+                                j = store.load(job["id"])
+                                store.update(j, result={})
+                            except Exception:
+                                pass
+                            asyncio.create_task(_do_upload(job["id"], chat_id, context.bot))
+                            return
+                        try:
+                            await update.message.reply_text("Preview file missing for failed job — send a new URL via /url")
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            await update.message.reply_text("No cookie-failed jobs to retry.")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            else:
+                try:
+                    await update.message.reply_text(
+                        f"❌ Cookies still bad: {chk.get('reason', 'unknown')}\n"
+                        f"Last known-good: {last_ok_str}\n"
+                        "Open Waterfox → https://www.tiktok.com → log in → then /refresh_cookies"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                await update.message.reply_text(msgs.ERROR_GENERIC.format(reason=str(e)))
+            except Exception:
+                pass
+
     # --- T7 daily cookie verification loop ---
     async def _daily_cookie_loop(bot):
         # interval configurable COOKIE_CHECK_HOURS, default 24h
@@ -2709,6 +2833,7 @@ def _build_bot():
                 BotCommand("set_tiktok", "⚙️ Set TikTok handle alias"),
                 BotCommand("status", "📊 Job/wizard status"),
                 BotCommand("interrupt", "✋ Cancel running job"),
+                BotCommand("refresh_cookies", "🦊 Re-check cookies + retry failed upload"),
             ]
             await app.bot.set_my_commands(cmds)
         except Exception:
@@ -2764,6 +2889,7 @@ def _build_bot():
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("preview", preview_cmd))
     app.add_handler(CommandHandler("retry", retry_cmd))
+    app.add_handler(CommandHandler("refresh_cookies", refresh_cookies_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app

@@ -582,7 +582,29 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
         page.keyboard.insert_text(buf)
 
 
-def upload_tiktok(video: Path, description: str, headless: bool = False, locale: str = "ar-EG") -> dict:
+def _is_logged_out(page) -> bool:
+    """True if Studio page shows a login wall (redirect or banner)."""
+    try:
+        cur_url = page.url or ""
+        if "login" in cur_url.lower() or "passport" in cur_url.lower():
+            return True
+        try:
+            body_probe = page.content()[:8000].lower()
+        except Exception:
+            return False
+        if ("log in" in body_probe and "tiktokstudio" not in body_probe[:2000]):
+            return True
+        if "session expired" in body_probe or "انتهت الجلسة" in body_probe:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+COOKIE_FAIL_MSG = "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry"
+
+
+def upload_tiktok(video: Path, description: str, headless: bool = False, locale: str = "ar-EG", wait_fresh_cookies: int = 0) -> dict:
     """Upload video to TikTok Studio — handles Joyride Skip + scroll fix + confirm modal.
 
     Proven flow from retry6:
@@ -592,6 +614,9 @@ def upload_tiktok(video: Path, description: str, headless: bool = False, locale:
     and returns {ok:False, cookie_fail:True} for Telegram mapping.
     locale: browser locale for Studio UI ('ar-EG' Arabic RTL default, 'en-US' English LTR).
       Hashtag entity mechanism is locale-independent; buttons covered dual-lang.
+    T11: wait_fresh_cookies>0 — on login redirect, wait up to N seconds for the
+      user to re-login in Waterfox (cookies.sqlite rewritten), re-extract,
+      reload Studio and continue automatically (single retry).
     """
     sz = video.stat().st_size
     log(f"upload start {video} {sz/1024/1024:.2f} MB desc='{description[:60]}'")
@@ -671,24 +696,54 @@ def upload_tiktok(video: Path, description: str, headless: bool = False, locale:
             log(f"goto fail {e}")
         time.sleep(2)
         screenshot(page, "template01_01_initial.png")
-        # T7: detect login redirect immediately after goto
+        # T7: detect login redirect immediately after goto (+T11 auto-wait/retry)
         try:
-            cur_url = page.url or ""
-            body_probe = ""
-            try:
-                body_probe = page.content()[:8000].lower()
-            except Exception:
-                body_probe = ""
-            if "login" in cur_url.lower() or "passport" in cur_url.lower() or ("log in" in body_probe and "tiktokstudio" not in body_probe[:2000]):
-                log(f"login redirect detected url={cur_url} body_has_login={'log in' in body_probe}")
+            if _is_logged_out(page):
+                log(f"login redirect detected url={page.url}")
                 screenshot(page, "template01_login_redirect.png")
-                browser.close()
-                return {"ok": False, "error": "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry", "cookie_fail": True, "url": None}
-            # also check for explicit session expired banner
-            if "session expired" in body_probe or "انتهت الجلسة" in body_probe:
-                log("session expired banner detected")
-                browser.close()
-                return {"ok": False, "error": "❌ TikTok session expired — please re-login in Waterfox at tiktok.com then send /retry or new URL\n❌ انتهت جلسة تيك توك — سجل دخولك مرة أخرى في Waterfox على tiktok.com ثم أرسل /retry", "cookie_fail": True, "url": None}
+                if wait_fresh_cookies > 0:
+                    # T11: wait for user re-login in Waterfox, then retry once
+                    try:
+                        from core.cookies import (
+                            cookies_db_mtime,
+                            wait_for_fresh_cookies,
+                        )
+                    except Exception:
+                        cookies_db_mtime = None  # type: ignore
+                        wait_for_fresh_cookies = None  # type: ignore
+                    if wait_for_fresh_cookies is not None:
+                        baseline = cookies_db_mtime() if cookies_db_mtime else 0.0
+                        log(f"waiting up to {wait_fresh_cookies}s for fresh Waterfox login...")
+                        ok, reason = wait_for_fresh_cookies(wait_fresh_cookies, 15, baseline)
+                        log(f"fresh-cookie wait: ok={ok} ({reason})")
+                        if ok:
+                            try:
+                                cookies = extract_cookies()
+                                context.clear_cookies()
+                                context.add_cookies(cookies)
+                                log(f"re-added {len(cookies)} fresh cookies, reloading Studio")
+                            except Exception as e:
+                                log(f"fresh cookie re-add fail {e}")
+                            try:
+                                page.goto(STUDIO_URL, wait_until="domcontentloaded", timeout=60000)
+                            except Exception as e:
+                                log(f"reload fail {e}")
+                            time.sleep(3)
+                            if _is_logged_out(page):
+                                log("still logged out after fresh cookies")
+                                screenshot(page, "template01_login_redirect.png")
+                                browser.close()
+                                return {"ok": False, "error": COOKIE_FAIL_MSG, "cookie_fail": True, "url": None}
+                            log("login recovered with fresh cookies — continuing upload")
+                        else:
+                            browser.close()
+                            return {"ok": False, "error": COOKIE_FAIL_MSG + f"\n(waited {wait_fresh_cookies}s: {reason})", "cookie_fail": True, "url": None}
+                    else:
+                        browser.close()
+                        return {"ok": False, "error": COOKIE_FAIL_MSG, "cookie_fail": True, "url": None}
+                else:
+                    browser.close()
+                    return {"ok": False, "error": COOKIE_FAIL_MSG, "cookie_fail": True, "url": None}
         except Exception as e:
             log(f"login check fail {e}")
 
