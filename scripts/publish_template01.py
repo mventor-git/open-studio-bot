@@ -362,18 +362,23 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
             return False
 
     def _tag_is_entity(tag: str) -> bool:
-        """True if tag sits ALONE in its own <span data-text="true">#tag</span>.
+        """True if tag is a real mention entity.
 
-        User-inspected DOM signature of a real clickable mention entity.
-        Plain-text tags stay mixed inside a larger span.
+        User-inspected Waterfox DOM of a REAL clickable hashtag:
+          <span class="mention" spellcheck="false" data-testid="mentionText">
+            <span data-offset-key="...">
+              <span data-text="true">#tag</span>
+        Plain-text tags lack the span.mention[data-testid=mentionText] wrapper.
         """
         try:
             return page.evaluate("""(tag) => {
                 const root = document.querySelector('[contenteditable="true"]');
                 if (!root) return false;
-                const spans = root.querySelectorAll('span[data-text="true"]');
-                for (const s of spans) {
-                    if ((s.innerText || '').trim() === tag) return true;
+                const mentions = root.querySelectorAll(
+                    'span.mention[data-testid="mentionText"], span[class*="mention"]'
+                );
+                for (const m of mentions) {
+                    if ((m.innerText || '').trim() === tag) return true;
                 }
                 return false;
             }""", tag)
