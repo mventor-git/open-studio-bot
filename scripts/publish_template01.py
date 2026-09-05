@@ -346,6 +346,40 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     """
     import re as _re
 
+    def _mention_open() -> bool:
+        """True when Draft.js mention list is open (aria-expanded=true).
+
+        The caption editor is Draft.js + mention plugin (role=combobox,
+        aria-autocomplete=list). It flips aria-expanded to true exactly
+        when the suggestion list opens. No DOM guessing needed.
+        """
+        try:
+            return page.evaluate("""() => {
+                const el = document.querySelector('[contenteditable="true"]');
+                return !!el && el.getAttribute('aria-expanded') === 'true';
+            }""")
+        except Exception:
+            return False
+
+    def _tag_is_entity(tag: str) -> bool:
+        """True if tag sits ALONE in its own <span data-text="true">#tag</span>.
+
+        User-inspected DOM signature of a real clickable mention entity.
+        Plain-text tags stay mixed inside a larger span.
+        """
+        try:
+            return page.evaluate("""(tag) => {
+                const root = document.querySelector('[contenteditable="true"]');
+                if (!root) return false;
+                const spans = root.querySelectorAll('span[data-text="true"]');
+                for (const s of spans) {
+                    if ((s.innerText || '').trim() === tag) return true;
+                }
+                return false;
+            }""", tag)
+        except Exception:
+            return False
+
     def _find_tag_item(tag_name: str):
         """Find the dropdown item matching tag_name. Returns {x,y} or None.
 
@@ -438,7 +472,7 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
             list_ready = False
             t0 = time.time()
             while time.time() - t0 < 12:
-                if _dropdown_visible():
+                if _mention_open() or _dropdown_visible():
                     list_ready = True
                     break
                 time.sleep(0.5)
@@ -453,9 +487,14 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                     time.sleep(0.3)
                 except Exception:
                     pass
-            if _dropdown_visible():
+            if _mention_open() or _dropdown_visible():
                 page.keyboard.press("Enter")  # confirm highlighted suggestion -> entity
-                time.sleep(0.5)
+                time.sleep(0.6)
+                if not _tag_is_entity(tok):
+                    # not an entity yet: list may need a beat, Enter once more
+                    time.sleep(0.5)
+                    page.keyboard.press("Enter")
+                    time.sleep(0.5)
             elif not pt:
                 page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
