@@ -469,7 +469,7 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 time.sleep(0.2)
             # type the tag char-by-char so the editor opens its suggestion list
             try:
-                page.keyboard.type(tok, delay=200)  # slow: lets suggestion debounce fire
+                page.keyboard.type(tok, delay=40)  # fast: debounce coalesces to ONE query per tag
             except Exception:
                 page.keyboard.insert_text(tok)
             # poll for the list to actually appear (up to 6s) instead of
@@ -503,7 +503,14 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
             elif not pt:
                 page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
-            # refocus editor: the dropdown click steals focus, without this
+            # gentle pacing: 2s gap between tags avoids suggestion query bursts
+            time.sleep(2.0)
+            try:
+                _ok = _tag_is_entity(tok)
+                log(f"hashtag {tok}: entity={_ok}")
+            except Exception:
+                pass
+            # refocus editor: the dropdown interaction can steal focus, without this
             # the next token is typed into nowhere and silently lost
             try:
                 ed = page.locator('[contenteditable="true"]').first
