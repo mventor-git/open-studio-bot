@@ -3,12 +3,12 @@ __pycache__/
 *.pyc
 .env
 .env.example
-jobs/  # runtime state files
-logs/  # CSV logs, callback logs
+jobs/
+logs/
 logs/.gitkeep
-screenshots/  # upload screenshots
-tools/  # bundled ffmpeg
-tests/media/  # downloaded test media
+screenshots/
+tools/
+tests/media/
 .pytest_cache/
 # Internal Mventor dev workflow (not for end users)
 docs/internal/
