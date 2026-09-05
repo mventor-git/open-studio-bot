@@ -346,61 +346,44 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     """
     import re as _re
 
-    def _click_dropdown_item(tag_name: str) -> bool:
-        """Click the FIRST item in the suggestion list (wanted tag is always first).
+    def _hover_first_item() -> bool:
+        """Hover the FIRST dropdown item (no click).
 
-        Uses Playwright locators (not raw coordinates): atomic click with
-        auto-scroll + actionability checks, so list animation/scroll
-        between measure and click cannot miss.
+        Hover highlights the item WITHOUT stealing editor focus, so a
+        following Enter confirms the selection and creates the entity.
+        A real click moves focus to the menu and the Enter is lost.
+        The wanted tag is always first in the list.
         """
-        selectors = [
-            '[role="listbox"] [role="option"]',
-            '[role="option"]',
-            '[class*="suggestion"] [class*="item"]',
-            '[class*="dropdown"] [class*="item"]',
-            '[class*="mention"] [class*="item"]',
-            '[class*="popup"] [class*="item"]',
-            'ul li[class*="tag"]',
-        ]
-        needle = tag_name.lstrip("#").strip().lower()
-        # pass 1: first item whose text matches the tag
-        if needle:
-            for sel in selectors:
-                try:
-                    loc = page.locator(sel)
-                    n = loc.count()
-                    for i in range(min(n, 5)):
-                        try:
-                            it = loc.nth(i)
-                            if not it.is_visible():
-                                continue
-                            t = (it.inner_text(timeout=1000) or "").lower()
-                            if needle in t:
-                                it.click(timeout=3000)
-                                time.sleep(0.5)
-                                return True
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-        # pass 2: the wanted tag is always first -> click first visible item
-        for sel in selectors:
-            try:
-                loc = page.locator(sel)
-                n = loc.count()
-                for i in range(min(n, 3)):
-                    try:
-                        it = loc.nth(i)
-                        if not it.is_visible():
-                            continue
-                        it.click(timeout=3000)
-                        time.sleep(0.5)
-                        return True
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-        return False
+        try:
+            pt = page.evaluate("""() => {
+                const sels = [
+                    '[role="listbox"] [role="option"]',
+                    '[role="option"]',
+                    '[class*="suggestion"] [class*="item"]',
+                    '[class*="dropdown"] [class*="item"]',
+                    '[class*="mention"] [class*="item"]',
+                    '[class*="popup"] [class*="item"]'
+                ];
+                for (const sel of sels) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) {
+                            return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+                        }
+                    }
+                }
+                return null;
+            }""")
+        except Exception:
+            return False
+        if not pt:
+            return False
+        try:
+            page.mouse.move(pt["x"], pt["y"])
+            time.sleep(0.3)
+            return True
+        except Exception:
+            return False
 
     def _dropdown_visible() -> bool:
         try:
@@ -442,18 +425,13 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 time.sleep(0.4)
             if not list_ready:
                 time.sleep(0.6)  # one last grace period for slow render
-            # click the matching item from the list, then Enter to
-            # confirm the selection (click alone only highlights)
-            clicked = _click_dropdown_item(tok)
-            if clicked:
-                time.sleep(0.3)
+            # hover the first list item (visible feedback, focus stays
+            # in editor) then Enter confirms -> entity created
+            hovered = _hover_first_item()
+            if _dropdown_visible():
                 page.keyboard.press("Enter")  # confirm highlighted suggestion -> entity
                 time.sleep(0.5)
-            if not clicked and _dropdown_visible():
-                # dropdown visible but click missed: Enter selects highlighted item
-                page.keyboard.press("Enter")
-                time.sleep(0.5)
-            elif not clicked:
+            elif not hovered:
                 page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
             # refocus editor: the dropdown click steals focus, without this
