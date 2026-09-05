@@ -334,81 +334,67 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
 
 
 def _type_caption_with_real_hashtags(page, description: str) -> None:
-    """Fill caption so hashtags become real clickable TikTok entities.
+    """Type caption selecting each hashtag from TikTok's suggestion dropdown.
 
-    TikTok Studio's caption editor is a Lexical contenteditable. The
-    hashtag plugin creates clickable entity nodes when it observes a
-    properly-structured HTML paste containing entity spans.
+    When '#tag' is typed in the caption box, TikTok Studio shows a
+    suggestion dropdown. Selecting from it (Enter on the highlighted
+    item) is what creates the real clickable hashtag entity. Pressing
+    only Space leaves the tag as plain text (0 views from tag browse).
 
-    `page.keyboard.insert_text` fails because it's one IME blob; the
-    editor's hashtag plugin never sees the key sequence to fire its
-    node transform. The proven working method: clipboard paste with
-    pre-built entity HTML that the editor parses into HashtagNodes.
-
-    Works for both Arabic and English TikTok Studio (RTL and LTR).
+    Flow per hashtag token:
+      1. Type the tag char-by-char (opens the dropdown)
+      2. Wait for the dropdown to render
+      3. Dropdown visible -> Enter selects the highlighted suggestion
+         (entity created). Not visible -> Space (plain-text fallback).
     """
     import re as _re
-    import json as _json
+
+    def _dropdown_visible() -> bool:
+        try:
+            return page.evaluate("""() => {
+                const sels = ['[role="listbox"]', '[class*="suggestion"]', '[class*="dropdown"]', '[class*="mention"]', '[class*="popup"]'];
+                for (const sel of sels) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 50 && r.height > 20 && el.offsetParent !== null) return true;
+                    }
+                }
+                return false;
+            }""")
+        except Exception:
+            return False
 
     tokens = _re.findall(r"#[^\s#]+|\S+|\s+", description)
-    has_tags = any(t.startswith("#") for t in tokens)
-    if not has_tags:
-        page.keyboard.insert_text(description)
-        return
-
-    # Build entity-bearing HTML: plain text as escaped segments,
-    # hashtags as <span data-hashtag-name="..."> spans.
-    parts = []
+    buf = ""
+    first_tag_done = False
     for tok in tokens:
         if tok.startswith("#"):
-            tag_name = tok[1:]
-            parts.append(
-                f'<span data-text="true" data-hashtag-name="{tag_name}">{tok}</span>'
-            )
+            if buf:
+                page.keyboard.insert_text(buf)
+                buf = ""
+                time.sleep(0.2)
+            # type the tag char-by-char so the editor opens its suggestion dropdown
+            try:
+                page.keyboard.type(tok, delay=80)
+            except Exception:
+                page.keyboard.insert_text(tok)
+            time.sleep(0.8)  # wait for dropdown to render
+            if _dropdown_visible():
+                page.keyboard.press("Enter")  # select highlighted suggestion -> entity
+                time.sleep(0.5)
+                if not first_tag_done:
+                    try:
+                        screenshot(page, "template01_06b_hashtag_selected.png")
+                    except Exception:
+                        pass
+                    first_tag_done = True
+            else:
+                page.keyboard.press("Space")  # no dropdown: plain-text fallback
+                time.sleep(0.3)
         else:
-            parts.append(_json.dumps(tok)[1:-1])
-
-    caption_html = "".join(parts)
-
-    # Write HTML to clipboard
-    try:
-        page.evaluate(
-            f"""(async () => {{
-                const html = `{caption_html}`;
-                const blob = new Blob([html], {{type: 'text/html'}});
-                await navigator.clipboard.write([
-                    new ClipboardItem({{'text/html': blob}})
-                ]);
-            }})()"""
-        )
-    except Exception:
-        pass
-
-    # Focus, select all, paste
-    try:
-        page.keyboard.press("Control+A")
-        time.sleep(0.2)
-        page.keyboard.press("Delete")
-        time.sleep(0.15)
-        page.keyboard.press("Control+V")
-        time.sleep(0.6)
-    except Exception:
-        pass
-
-    # Verify: count entity nodes (Lexical renders hashtag as span with
-    # class containing 'hashtag' or data-hashtag-name attribute).
-    try:
-        page.evaluate(
-            """() => {
-                const root = document.querySelector('[contenteditable="true"]');
-                if (!root) return 0;
-                return root.querySelectorAll(
-                    '[data-hashtag-name], [class*="hashtag"], [class*="Hashtag"]'
-                ).length;
-            }"""
-        )
-    except Exception:
-        pass
+            buf += tok
+    if buf:
+        page.keyboard.insert_text(buf)
 
 
 def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict:
@@ -448,6 +434,10 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
         browser = p.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled","--no-sandbox","--disable-infobars","--disable-dev-shm-usage","--disable-gpu"], timeout=30000)
         log(f"Launched chromium headless={headless}")
         context = browser.new_context(viewport={"width":1920,"height":1080}, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", locale="ar-EG", extra_http_headers={"Accept-Language":"ar,en-US;q=0.9,en;q=0.8"})
+        try:
+            context.grant_permissions(["clipboard-read","clipboard-write"], origin="https://www.tiktok.com")
+        except Exception:
+            pass
         try:
             context.add_cookies(cookies)
             log(f"Added {len(cookies)} cookies")
