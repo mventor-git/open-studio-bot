@@ -196,63 +196,64 @@ def main() -> int:
         # NOTE: mention trigger needs preceding text - insert "test " first
         # (bare # at block start never opens the list; real captions
         # always have description text before tags)
-        # SINGLE flow (prod mirror): hover+Enter. One query per run to
-        # avoid tripping TikTok suggestion throttle.
-        for variant in ["V1-hover+Enter"]:
-            _clear_box()
-            page.keyboard.insert_text("test ")
-            time.sleep(0.3)
-            print(f"  === {variant} === text={_ed_text()!r}", flush=True)
-            _type_tag("#zoo")
-            print(f"  {variant}: list_open={_mention_open()} highlight={_highlighted_item()!r}", flush=True)
-            if variant == "V1-hover+Enter":
+        # FULL FLOW (prod mirror): all tags with proven V1-hover+Enter.
+        # One query per tag + 2s pacing to avoid suggestion throttle.
+        import re as _re2
+        _toks = _re2.findall(r"#[^\s#]+|\S+|\s+", caption)
+        _buf = ""
+        for _tok in _toks:
+            if _tok.startswith("#"):
+                if _buf:
+                    page.keyboard.insert_text(_buf)
+                    _buf = ""
+                    time.sleep(0.2)
+                print(f"  TAG {_tok}: typing...", flush=True)
+                _type_tag(_tok)
+                print(f"  TAG {_tok}: list_open={_mention_open()}", flush=True)
                 try:
-                    pt = page.evaluate("""() => {
-                        const root = document.querySelector('[class*="mention-list"]');
-                        if (!root) return null;
-                        const it = root.querySelector('[role="option"], li, div[class*="item" i]');
-                        if (!it) return null;
-                        const r = it.getBoundingClientRect();
-                        return {x: r.x + r.width / 2, y: r.y + r.height / 2};
-                    }""")
-                    if pt:
-                        page.mouse.move(pt["x"], pt["y"])
+                    _pt = page.evaluate("""(needle) => {
+                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                        let el;
+                        while (el = walker.nextNode()) {
+                            if (el.closest('[contenteditable="true"]')) continue;
+                            const t = (el.innerText || '').trim();
+                            if (!t || t.length > 50 || !t.includes('#')) continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.width < 30 || r.height < 8 || el.offsetParent === null) continue;
+                            if (t.toLowerCase().includes(('#' + needle).toLowerCase())) {
+                                return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+                            }
+                        }
+                        return null;
+                    }""", _tok.lstrip("#"))
+                    if _pt:
+                        page.mouse.move(_pt["x"], _pt["y"])
                         time.sleep(0.4)
-                except Exception as e:
-                    print(f"  {variant}: hover fail {e}", flush=True)
-                print(f"  {variant}: after-hover highlight={_highlighted_item()!r}", flush=True)
+                except Exception:
+                    pass
+                page.evaluate("""() => {
+                    const el = document.querySelector('[contenteditable="true"]');
+                    if (!el) return;
+                    el.focus();
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    range.collapse(false);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }""")
+                time.sleep(0.2)
                 page.keyboard.press("Enter")
                 time.sleep(0.6)
-            elif variant == "V2-ArrowDown+Enter":
-                page.keyboard.press("ArrowDown")
-                time.sleep(0.4)
-                print(f"  {variant}: after-down highlight={_highlighted_item()!r}", flush=True)
-                page.keyboard.press("Enter")
-                time.sleep(0.6)
-            elif variant == "V3-Enter-only":
-                page.keyboard.press("Enter")
-                time.sleep(0.6)
-            elif variant == "V4-locator-click":
-                try:
-                    loc = page.locator('[class*="mention-list"] [role="option"], [class*="mention-list"] li').first
-                    if loc.count() > 0:
-                        loc.click(timeout=3000)
-                        time.sleep(0.6)
-                        print(f"  {variant}: clicked", flush=True)
-                    else:
-                        print(f"  {variant}: no option found", flush=True)
-                except Exception as e:
-                    print(f"  {variant}: click fail {e}", flush=True)
-            print(f"  {variant}: entities={_entities()} text={_ed_text()!r}", flush=True)
-            try:
-                screenshot(page, f"test_variant_{variant.split('-')[0]}.png")
-            except Exception:
-                pass
+                print(f"  TAG {_tok}: entities={_entities()} text={_ed_text()!r}", flush=True)
+                time.sleep(2.0)  # gentle pacing between tags
+            else:
+                _buf += _tok
+        if _buf:
+            page.keyboard.insert_text(_buf)
+        time.sleep(1)
 
-        print("MATRIX DONE - skipping legacy token loop", flush=True)
-        if False:
-            tokens = _re.findall(r"#[^\s#]+|\S+|\s+", caption)
-        buf = ""
+        print("FULL FLOW DONE", flush=True)
 
         # verify: list every mention entity in the box
         entities = page.evaluate("""() => {
