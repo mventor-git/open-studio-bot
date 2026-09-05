@@ -346,42 +346,53 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     """
     import re as _re
 
-    def _hover_first_item() -> bool:
-        """Hover the FIRST dropdown item (no click).
+    def _find_tag_item(tag_name: str):
+        """Find the dropdown item matching tag_name. Returns {x,y} or None.
 
-        Hover highlights the item WITHOUT stealing editor focus, so a
-        following Enter confirms the selection and creates the entity.
-        A real click moves focus to the menu and the Enter is lost.
-        The wanted tag is always first in the list.
+        Only matches VISIBLE elements OUTSIDE the editor whose text
+        contains '#' + tag text. This avoids false positives from the
+        location dropdown, tooltips, or other popups.
         """
         try:
-            pt = page.evaluate("""() => {
-                const sels = [
-                    '[role="listbox"] [role="option"]',
-                    '[role="option"]',
-                    '[class*="suggestion"] [class*="item"]',
-                    '[class*="dropdown"] [class*="item"]',
-                    '[class*="mention"] [class*="item"]',
-                    '[class*="popup"] [class*="item"]'
-                ];
-                for (const sel of sels) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) {
-                            return {x: r.x + r.width / 2, y: r.y + r.height / 2};
-                        }
-                    }
+            return page.evaluate("""(needle) => {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                const cands = [];
+                let el;
+                while (el = walker.nextNode()) {
+                    if (el.closest('[contenteditable="true"]')) continue;
+                    const t = (el.innerText || '').trim();
+                    if (!t || t.length > 50) continue;
+                    if (!t.includes('#')) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 30 || r.height < 8 || el.offsetParent === null) continue;
+                    // leaf-ish: skip containers whose children carry the same text
+                    cands.push({text: t.slice(0, 50), x: r.x + r.width / 2, y: r.y + r.height / 2});
+                    if (cands.length >= 20) break;
                 }
-                return null;
-            }""")
+                const n = (needle || '').toLowerCase();
+                for (const c of cands) {
+                    if (n && c.text.toLowerCase().includes('#' + n)) return {x: c.x, y: c.y};
+                }
+                return cands.length ? {x: cands[0].x, y: cands[0].y} : null;
+            }""", tag_name.lstrip("#"))
         except Exception:
-            return False
-        if not pt:
-            return False
+            return None
+
+    def _dropdown_visible() -> bool:
+        """True only if a hashtag suggestion item is visible outside the editor."""
         try:
-            page.mouse.move(pt["x"], pt["y"])
-            time.sleep(0.3)
-            return True
+            return page.evaluate("""() => {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                let el;
+                while (el = walker.nextNode()) {
+                    if (el.closest('[contenteditable="true"]')) continue;
+                    const t = (el.innerText || '').trim();
+                    if (!t || t.length > 50 || !t.includes('#')) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 30 && r.height > 8 && el.offsetParent !== null) return true;
+                }
+                return false;
+            }""")
         except Exception:
             return False
 
@@ -433,13 +444,19 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 time.sleep(0.5)
             if not list_ready:
                 time.sleep(0.6)  # one last grace period for slow render
-            # hover the first list item (visible feedback, focus stays
-            # in editor) then Enter confirms -> entity created
-            hovered = _hover_first_item()
+            # hover the matching list item (visible feedback, focus
+            # stays in editor) then Enter confirms -> entity created
+            pt = _find_tag_item(tok)
+            if pt:
+                try:
+                    page.mouse.move(pt["x"], pt["y"])
+                    time.sleep(0.3)
+                except Exception:
+                    pass
             if _dropdown_visible():
                 page.keyboard.press("Enter")  # confirm highlighted suggestion -> entity
                 time.sleep(0.5)
-            elif not hovered:
+            elif not pt:
                 page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
             # refocus editor: the dropdown click steals focus, without this
