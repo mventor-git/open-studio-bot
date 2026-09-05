@@ -388,11 +388,19 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     def _dropdown_visible() -> bool:
         try:
             return page.evaluate("""() => {
-                const sels = ['[role="listbox"]', '[class*="suggestion"]', '[class*="dropdown"]', '[class*="mention"]', '[class*="popup"]'];
+                const sels = [
+                    '[role="listbox"] [role="option"]',
+                    '[role="option"]',
+                    '[class*="suggestion"] [class*="item"]',
+                    '[class*="dropdown"] [class*="item"]',
+                    '[class*="mention"] [class*="item"]',
+                    '[role="listbox"]', '[class*="suggestion"]',
+                    '[class*="dropdown"]', '[class*="mention"]', '[class*="popup"]'
+                ];
                 for (const sel of sels) {
                     for (const el of document.querySelectorAll(sel)) {
                         const r = el.getBoundingClientRect();
-                        if (r.width > 50 && r.height > 20 && el.offsetParent !== null) return true;
+                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) return true;
                     }
                 }
                 return false;
@@ -411,18 +419,18 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 time.sleep(0.2)
             # type the tag char-by-char so the editor opens its suggestion list
             try:
-                page.keyboard.type(tok, delay=80)
+                page.keyboard.type(tok, delay=200)  # slow: lets suggestion debounce fire
             except Exception:
                 page.keyboard.insert_text(tok)
             # poll for the list to actually appear (up to 6s) instead of
             # a fixed sleep that races the dropdown render
             list_ready = False
             t0 = time.time()
-            while time.time() - t0 < 6:
+            while time.time() - t0 < 12:
                 if _dropdown_visible():
                     list_ready = True
                     break
-                time.sleep(0.4)
+                time.sleep(0.5)
             if not list_ready:
                 time.sleep(0.6)  # one last grace period for slow render
             # hover the first list item (visible feedback, focus stays
