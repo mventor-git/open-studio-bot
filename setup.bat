@@ -125,16 +125,19 @@ echo  ================================================
 echo.
 pause
 
-rem --- launch the two services ---
-start "osb-opencode" cmd /c "%REPO%\run_opencode_forever.bat"
-timeout /t 3 /nobreak >nul
-start "osb-bot" cmd /c "%REPO%\run_bot_forever.bat"
+rem --- launch the tray controller (replaces .bat launchers) ---
+echo.
+echo  Starting Open Studio Bot tray controller...
+echo  (Green icon = bot running, Red icon = stopped)
+echo.
+timeout /t 2 /nobreak >nul
+start "Open Studio Bot Tray" cmd /c "%REPO%\.venv\Scripts\python.exe" "%REPO%\tray_app.py"
 
 echo.
-echo  Open Studio Bot is running!
-echo  - Telegram bot (with daily cookie check every 24h)
-echo  - opencode serve on port 4096 (only needed for experimental dispatcher)
+echo  Open Studio Bot tray is running in your system tray!
+echo  - Right-click the icon for Start/Stop/Config/Quit
+echo  - Green = bot running, Red = stopped
 echo.
-echo  To stop: taskkill /FI "WINDOWTITLE eq osb-*"
+echo  To stop: right-click tray icon -> Quit
 echo.
 pause
