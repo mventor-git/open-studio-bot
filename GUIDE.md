@@ -171,6 +171,11 @@ Type Hashtags (e.g., تاريخ حضارة — I'll add #)
 - With or without `#` — bot normalises to `#تاريخ #حضارة`.
 - Unlimited count; Arabic, English, mixed.
 - Send `/skip` or press enter for none.
+- Tags are typed into TikTok Studio and **selected from the suggestion
+  list**, so they publish as real clickable hashtag entities (not plain
+  text). Verified in both Arabic and English Studio — the bot detects
+  the version (`Studio locale: ar/en` in the log) and uses the right
+  button texts automatically.
 
 ### Step 6 — Preview + action
 

@@ -223,17 +223,19 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
         try:
             info = page.evaluate("""() => {
                 const bodyText=document.body.innerText||'';
-                const hasQuestion = bodyText.includes('هل تريد المتابعة للنشر');
-                const hasChecking = bodyText.includes('ما زلنا نفحص الفيديو');
+                const hasQuestion = bodyText.includes('هل تريد المتابعة للنشر')
+                    || /continue.*post/i.test(bodyText) || /post\s*now/i.test(bodyText);
+                const hasChecking = bodyText.includes('ما زلنا نفحص الفيديو')
+                    || /still.*(checking|reviewing)/i.test(bodyText);
                 const buttons=Array.from(document.querySelectorAll('button')).map(b=>({
                     text:(b.innerText||'').trim().slice(0,60), visible:!!b.offsetParent, disabled:b.disabled, aria:b.getAttribute('aria-disabled')
-                })).filter(b=>b.text.includes('النشر')||b.text.includes('إلغاء')).slice(0,6);
+                })).filter(b=>b.text.includes('النشر')||b.text.includes('إلغاء')||/post\s*now/i.test(b.text)||/publish\s*now/i.test(b.text)||b.text.trim().toLowerCase()==='post').slice(0,6);
                 return {hasQuestion, hasChecking, buttons, snippet: bodyText.slice(0,3000)};
             }""")
             log(f"[{elapsed}s] hasQuestion={info.get('hasQuestion')} checking={info.get('hasChecking')} buttons={json.dumps(info.get('buttons'), ensure_ascii=False)}")
             if info.get("hasQuestion"):
                 log("Modal detected — clicking 'النشر الآن' force:true")
-                for sel in ['button:has-text("النشر الآن")', 'button:has-text("النشر")']:
+                for sel in ['button:has-text("النشر الآن")', 'button:has-text("Post now")', 'button:has-text("Publish now")', 'button:has-text("النشر")']:
                     try:
                         cnt = page.locator(sel).count()
                         if cnt > 0:
@@ -275,7 +277,7 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
                                     except Exception as e2:
                                         log(f"  force click fail {e2}")
                                         try:
-                                            page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>(x.innerText||'').includes('النشر الآن')); if(b) b.click(); }""")
+                                            page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||''); return t.includes('النشر الآن')||/post\s*now/i.test(t)||/publish\s*now/i.test(t);}); if(b) b.click(); }""")
                                             clicked = True
                                             break
                                         except Exception:
@@ -285,7 +287,7 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
                 if not clicked:
                     try:
                         res = page.evaluate("""() => {
-                            const b=Array.from(document.querySelectorAll('button')).find(x=> (x.innerText||'').includes('النشر الآن'));
+                            const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||''); return t.includes('النشر الآن')||/post\s*now/i.test(t)||/publish\s*now/i.test(t);});
                             if(!b) return 'not found';
                             b.click(); return 'clicked via evaluate';
                         }""")
@@ -300,7 +302,7 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
                 # check if already success without modal?
                 try:
                     body = page.content().lower()
-                    if "تم النشر" in body:
+                    if "تم النشر" in body or "posted" in body:
                         log(f"[{elapsed}s] تم النشر found — no modal needed")
                         break
                 except Exception:
@@ -346,17 +348,36 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
     """
     import re as _re
 
-    def _mention_open() -> bool:
-        """True when Draft.js mention list is open (aria-expanded=true).
+    def _studio_locale() -> str:
+        """Detect Studio UI version: 'ar' (RTL Arabic) or 'en' (LTR English).
 
-        The caption editor is Draft.js + mention plugin (role=combobox,
-        aria-autocomplete=list). It flips aria-expanded to true exactly
-        when the suggestion list opens. No DOM guessing needed.
+        Reads document lang/dir. Both versions share the same code-level
+        selectors (mention-list-popover, span.mention); only button/modal
+        text differs (handled with dual Arabic/English selectors).
         """
         try:
             return page.evaluate("""() => {
-                const el = document.querySelector('[contenteditable="true"]');
-                return !!el && el.getAttribute('aria-expanded') === 'true';
+                const lang = (document.documentElement.lang || '').toLowerCase();
+                const dir = (document.documentElement.dir || '').toLowerCase();
+                if (lang.startsWith('ar') || dir === 'rtl') return 'ar';
+                return 'en';
+            }""")
+        except Exception:
+            return "?"
+
+    def _mention_open() -> bool:
+        """True when the Draft.js mention-list popover is visible.
+
+        Verified class from live DOM: DIV.jsx-*/mention-list-popover.
+        (aria-expanded on the editor never flips - do not use it.)
+        """
+        try:
+            return page.evaluate("""() => {
+                for (const el of document.querySelectorAll('[class*="mention-list"]')) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 50 && r.height > 20 && el.offsetParent !== null) return true;
+                }
+                return false;
             }""")
         except Exception:
             return False
@@ -435,28 +456,6 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
         except Exception:
             return False
 
-    def _dropdown_visible() -> bool:
-        try:
-            return page.evaluate("""() => {
-                const sels = [
-                    '[role="listbox"] [role="option"]',
-                    '[role="option"]',
-                    '[class*="suggestion"] [class*="item"]',
-                    '[class*="dropdown"] [class*="item"]',
-                    '[class*="mention"] [class*="item"]',
-                    '[role="listbox"]', '[class*="suggestion"]',
-                    '[class*="dropdown"]', '[class*="mention"]', '[class*="popup"]'
-                ];
-                for (const sel of sels) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) return true;
-                    }
-                }
-                return false;
-            }""")
-        except Exception:
-            return False
 
     tokens = _re.findall(r"#[^\s#]+|\S+|\s+", description)
     buf = ""
@@ -476,13 +475,13 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
             # a fixed sleep that races the dropdown render
             list_ready = False
             t0 = time.time()
-            while time.time() - t0 < 12:
+            while time.time() - t0 < 15:
                 if _mention_open() or _dropdown_visible():
                     list_ready = True
                     break
                 time.sleep(0.5)
-            if not list_ready:
-                time.sleep(0.6)  # one last grace period for slow render
+            if list_ready:
+                time.sleep(1.0)  # let items render after container opens
             # hover the matching list item (visible feedback, focus
             # stays in editor) then Enter confirms -> entity created
             pt = _find_tag_item(tok)
@@ -493,6 +492,22 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 except Exception:
                     pass
             if _mention_open() or _dropdown_visible():
+                # restore caret to end via JS (clicks are intercepted by overlays)
+                try:
+                    page.evaluate("""() => {
+                        const el = document.querySelector('[contenteditable="true"]');
+                        if (!el) return;
+                        el.focus();
+                        const range = document.createRange();
+                        range.selectNodeContents(el);
+                        range.collapse(false);
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    }""")
+                    time.sleep(0.2)
+                except Exception:
+                    pass
                 page.keyboard.press("Enter")  # confirm highlighted suggestion -> entity
                 time.sleep(0.6)
                 if not _tag_is_entity(tok):
@@ -533,7 +548,7 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
         page.keyboard.insert_text(buf)
 
 
-def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict:
+def upload_tiktok(video: Path, description: str, headless: bool = False, locale: str = "ar-EG") -> dict:
     """Upload video to TikTok Studio — handles Joyride Skip + scroll fix + confirm modal.
 
     Proven flow from retry6:
@@ -541,6 +556,8 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
       -> wait POST /web/project/post/v1/ 200 -> content shows 1 video under review
     T7: detects cookie/session expiry (truncated cookies, missing sessionid, login redirect)
     and returns {ok:False, cookie_fail:True} for Telegram mapping.
+    locale: browser locale for Studio UI ('ar-EG' Arabic RTL default, 'en-US' English LTR).
+      Hashtag entity mechanism is locale-independent; buttons covered dual-lang.
     """
     sz = video.stat().st_size
     log(f"upload start {video} {sz/1024/1024:.2f} MB desc='{description[:60]}'")
@@ -569,7 +586,8 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled","--no-sandbox","--disable-infobars","--disable-dev-shm-usage","--disable-gpu"], timeout=30000)
         log(f"Launched chromium headless={headless}")
-        context = browser.new_context(viewport={"width":1920,"height":1080}, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", locale="ar-EG", extra_http_headers={"Accept-Language":"ar,en-US;q=0.9,en;q=0.8"})
+        accept_lang = "ar,en-US;q=0.9,en;q=0.8" if locale.lower().startswith("ar") else "en-US,en;q=0.9,ar;q=0.8"
+        context = browser.new_context(viewport={"width":1920,"height":1080}, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", locale=locale, extra_http_headers={"Accept-Language": accept_lang})
         try:
             context.grant_permissions(["clipboard-read","clipboard-write"], origin="https://www.tiktok.com")
         except Exception:
@@ -707,6 +725,13 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
             return {"ok": False, "error": "no caption"}
         screenshot(page, "template01_05_caption_found.png")
         log(f"Filling '{description[:60]}'")
+        # detect Studio UI version (ar RTL / en LTR); entity mechanism is
+        # locale-independent (code-level selectors), buttons covered dual-lang
+        try:
+            _loc = page.evaluate("() => ((document.documentElement.lang || '').toLowerCase().startsWith('ar') || (document.documentElement.dir || '') === 'rtl') ? 'ar' : 'en'")
+        except Exception:
+            _loc = "?"
+        log(f"Studio locale: {_loc}")
         try:
             page.evaluate("""() => { const el=document.querySelector('[contenteditable="true"]'); if(el) el.scrollIntoView({block:'center'}); }""")
             time.sleep(0.5)
@@ -780,9 +805,9 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
             try:
                 infos=page.evaluate("""() => Array.from(document.querySelectorAll('button')).map(b=>({
                     text:(b.innerText||'').trim().slice(0,60), disabled:b.disabled, aria:b.getAttribute('aria-disabled'), visible:!!b.offsetParent
-                })).filter(b=>b.text.includes('نشر')||b.text.includes('Post')).slice(0,5)""")
+                })).filter(b=>b.text.includes('نشر')||b.text.trim()==='Post').slice(0,5)""")
                 log(f"[{elapsed}s] Post {json.dumps(infos, ensure_ascii=False)}")
-                for sel in ['button:has-text("نشر")','button:has-text("Post")']:
+                for sel in ['button:has-text("نشر")','button:text-is("Post")']:
                     cnt=page.locator(sel).count()
                     if cnt>0:
                         loc=page.locator(sel).first
@@ -813,14 +838,14 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
         screenshot(page, "template01_08_after_window_scroll.png")
         try: post_btn.scroll_into_view_if_needed(timeout=5000)
         except Exception:
-            page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>(x.innerText||'').includes('نشر')); if(b) b.scrollIntoView({block:'center'}); }""")
+            page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(b) b.scrollIntoView({block:'center'}); }""")
         time.sleep(0.8)
         screenshot(page, "template01_09_after_scroll.png")
         try:
             bbox=post_btn.bounding_box()
             log(f"bbox {bbox}")
             click_ok=page.evaluate("""() => {
-                const b=Array.from(document.querySelectorAll('button')).find(x=>(x.innerText||'').includes('نشر'));
+                const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';});
                 if(!b) return {ok:false};
                 const r=b.getBoundingClientRect(); const el=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
                 return {ok: el===b || b.contains(el) || (el&&el.closest('button')===b), rect:{x:r.left,y:r.top}};
@@ -834,7 +859,7 @@ def upload_tiktok(video: Path, description: str, headless: bool = False) -> dict
         try: post_btn.click(force=True, timeout=10000); clicked=True; log("Post force click ok")
         except Exception as e:
             log(f"force fail {e}")
-            try: page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>(x.innerText||'').includes('نشر')); if(b) b.click(); }"""); clicked=True; log("evaluate click ok")
+            try: page.evaluate("""() => { const b=Array.from(document.querySelectorAll('button')).find(x=>{const t=(x.innerText||'').trim(); return t.includes('نشر')||t==='Post';}); if(b) b.click(); }"""); clicked=True; log("evaluate click ok")
             except Exception as e2: log(f"eval fail {e2}")
         time.sleep(1.5)
         screenshot(page, "template01_10_after_post_click.png")

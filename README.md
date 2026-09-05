@@ -134,6 +134,41 @@ All commands assume you have added the bot to a group/channel where the chat ID 
 - **Template 00** – Clean 9:16 video, optional watermark, no burned text.
 - **Template 01** – 9:16 vertical + a styled Majalla card (9:16 tall, 0.94 wide) + watermark handle if set + gold accent.
 
+### Hashtags — verified clickable (Arabic + English Studio)
+
+The bot types each `#tag` into TikTok Studio's caption box (Draft.js +
+mention plugin), waits for the suggestion list (`mention-list-popover`),
+hovers the matching item, presses **Enter** to select it, and verifies
+the tag became a real `span.mention[data-testid="mentionText"]` entity.
+Plain-text tags get 0 views from tag browse; real entities appear on
+hashtag pages.
+
+**Verification matrix:**
+
+| Studio version | How detected | Hashtag entities | Publish |
+|---|---|---|---|
+| Arabic (RTL, `ar-EG`) | `document.dir === 'rtl'` → logged as `Studio locale: ar` | ✅ PASS — `['#zoo', '#history', '#test']` via no-publish harness | ✅ POST 200, item live |
+| English (LTR, `en-US`) | `document.lang === 'en'` → logged as `Studio locale: en` | ✅ PASS — `['#zoo', '#history', '#test']` via no-publish harness | ✅ POST 200, item live |
+
+The code detects the version at caption-fill time (`Studio locale: ar/en`
+in the log) and proceeds the right way: the hashtag entity mechanism is
+locale-independent (code-level selectors), while Post/confirm-modal
+buttons are matched dual-language (نشر/Post exact-match, النشر الآن /
+Post now / Publish now). Note: English `button:has-text("Post")` would
+also match the sidebar "Posts" item, so the code uses exact-match
+`button:text-is("Post")`.
+
+Run the no-publish proof yourself (no video is posted):
+
+```powershell
+# Arabic Studio (default)
+.venv\Scripts\python.exe test_hashtag_no_publish.py "My caption #tag1 #tag2"
+# English Studio
+.venv\Scripts\python.exe test_hashtag_no_publish.py "My caption #tag1 #tag2" "en-US"
+```
+
+Expected: `PASS: all N tags are real entities: [...]`.
+
 ### Errors & troubleshooting
 
 - **“❌ TikTok session expired — please re‑login in Waterfox”** → Ensure your TikTok account (`TIKTOK_HANDLE`) is set and Waterfox has that login.
