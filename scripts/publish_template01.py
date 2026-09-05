@@ -334,20 +334,68 @@ def wait_for_confirm_and_publish(page, timeout: int = 15) -> bool:
 
 
 def _type_caption_with_real_hashtags(page, description: str) -> None:
-    """Type caption selecting each hashtag from TikTok's suggestion dropdown.
+    """Type caption selecting each hashtag from TikTok's suggestion list.
 
-    When '#tag' is typed in the caption box, TikTok Studio shows a
-    suggestion dropdown. Selecting from it (Enter on the highlighted
-    item) is what creates the real clickable hashtag entity. Pressing
-    only Space leaves the tag as plain text (0 views from tag browse).
+    Flow per hashtag (user-confirmed behavior):
+      1. Type '#tag' -> suggestion LIST appears
+      2. Click the matching item from the list -> real entity created
+      3. Type the next hashtag -> its list appears -> select -> repeat
 
-    Flow per hashtag token:
-      1. Type the tag char-by-char (opens the dropdown)
-      2. Wait for the dropdown to render
-      3. Dropdown visible -> Enter selects the highlighted suggestion
-         (entity created). Not visible -> Space (plain-text fallback).
+    Pressing Space alone leaves plain text (0 views from tag browse).
+    Clicking the list item is what makes the tag clickable.
     """
     import re as _re
+
+    def _click_dropdown_item(tag_name: str) -> bool:
+        """Click the dropdown list item matching tag_name. Returns True if clicked."""
+        try:
+            # broad selectors covering listbox/option, mention, suggest, popup containers
+            items = page.evaluate("""() => {
+                const sels = [
+                    '[role="listbox"] [role="option"]',
+                    '[role="option"]',
+                    '[class*="suggestion"] [class*="item"]',
+                    '[class*="dropdown"] [class*="item"]',
+                    '[class*="mention"] [class*="item"]',
+                    '[class*="popup"] [class*="item"]',
+                    'ul li[class*="tag"]',
+                    'div[class*="Option"]'
+                ];
+                const out = [];
+                for (const sel of sels) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 30 && r.height > 10 && el.offsetParent !== null) {
+                            out.push({
+                                text: (el.innerText || "").trim().slice(0, 80),
+                                x: r.x + r.width / 2,
+                                y: r.y + r.height / 2
+                            });
+                        }
+                    }
+                }
+                return out;
+            }""")
+        except Exception:
+            return False
+        if not items:
+            return False
+        # prefer item whose text matches the tag (with or without #)
+        needle = tag_name.lstrip("#").strip().lower()
+        best = None
+        for it in items:
+            t = (it.get("text") or "").lower()
+            if needle and needle in t:
+                best = it
+                break
+        if best is None:
+            best = items[0]  # fallback: first visible item
+        try:
+            page.mouse.click(best["x"], best["y"])
+            time.sleep(0.5)
+            return True
+        except Exception:
+            return False
 
     def _dropdown_visible() -> bool:
         try:
@@ -373,24 +421,27 @@ def _type_caption_with_real_hashtags(page, description: str) -> None:
                 page.keyboard.insert_text(buf)
                 buf = ""
                 time.sleep(0.2)
-            # type the tag char-by-char so the editor opens its suggestion dropdown
+            # type the tag char-by-char so the editor opens its suggestion list
             try:
                 page.keyboard.type(tok, delay=80)
             except Exception:
                 page.keyboard.insert_text(tok)
-            time.sleep(0.8)  # wait for dropdown to render
-            if _dropdown_visible():
-                page.keyboard.press("Enter")  # select highlighted suggestion -> entity
+            time.sleep(0.8)  # wait for list to render
+            # click the matching item from the list
+            clicked = _click_dropdown_item(tok)
+            if not clicked and _dropdown_visible():
+                # dropdown visible but click missed: Enter selects highlighted item
+                page.keyboard.press("Enter")
                 time.sleep(0.5)
-                if not first_tag_done:
-                    try:
-                        screenshot(page, "template01_06b_hashtag_selected.png")
-                    except Exception:
-                        pass
-                    first_tag_done = True
-            else:
-                page.keyboard.press("Space")  # no dropdown: plain-text fallback
+            elif not clicked:
+                page.keyboard.press("Space")  # no list: plain-text fallback
                 time.sleep(0.3)
+            if not first_tag_done:
+                try:
+                    screenshot(page, "template01_06b_hashtag_selected.png")
+                except Exception:
+                    pass
+                first_tag_done = True
         else:
             buf += tok
     if buf:
